@@ -1,0 +1,16 @@
+[Unit]
+Description=a10-flasher portal (servidor web / hub de agentes)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/a10-flasher
+ExecStart=/opt/a10-flasher/.venv/bin/python -m a10flash.portal --config /opt/a10-flasher/config.yaml
+Restart=always
+RestartSec=10
+User=root
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

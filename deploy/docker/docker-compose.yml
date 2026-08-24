@@ -1,0 +1,76 @@
+# a10-flasher portal — deploy com Traefik (rede pública)
+#
+# Pré-requisitos:
+#   1. Crie a rede externa do Traefik (ou use o nome da sua):
+#        docker network create traefik-public
+#      Se a sua rede tem outro nome, ajuste em `networks` abaixo.
+#   2. Defina o token no .env (junto deste arquivo):
+#        PORTAL_TOKEN=um-token-forte
+#   3. O domínio a10.app.diorg.es deve apontar (DNS A) para o host do Traefik.
+#   4. O certresolver do seu Traefik precisa se chamar `letsencrypt`
+#      (ajuste o label se o seu tem outro nome).
+#
+# Subir:
+#   docker compose -f deploy/docker/docker-compose.yml up -d --build
+#
+# Depois de no ar, o LAB conecta com:
+#   portal_agent:
+#     url: "wss://a10.app.diorg.es/agent"   # wss (TLS)
+#     token: "um-token-forte"               # mesmo token do PORTAL_TOKEN
+
+services:
+  portal:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    container_name: a10-flasher-portal
+    restart: unless-stopped
+    environment:
+      PORTAL_TOKEN: ${PORTAL_TOKEN:-}
+      PORTAL_HOST: 0.0.0.0
+      PORTAL_PORT: 8080
+      # DB dos equipamentos registrados (persistente no volume abaixo)
+      PORTAL_DB: /data/a10flash.db
+    volumes:
+      - a10flash-logs:/opt/a10-flasher/logs
+      - a10flash-db:/data
+      # Opcional: config completa (Telegram do portal etc.)
+      # - ./config.yaml:/opt/a10-flasher/config.yaml:ro
+    networks:
+      - traefik-public
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik-public"
+
+      # rota HTTPS (WebSocket /ws e /agent passam normalmente pelo Traefik)
+      - "traefik.http.routers.a10portal.rule=Host(`a10.app.diorg.es`)"
+      - "traefik.http.routers.a10portal.entrypoints=websecure"
+      - "traefik.http.routers.a10portal.tls=true"
+      - "traefik.http.routers.a10portal.tls.certresolver=letsencrypt"
+      - "traefik.http.services.a10portal.loadbalancer.server.port=8080"
+
+      # HTTP -> HTTPS
+      - "traefik.http.routers.a10portal-http.rule=Host(`a10.app.diorg.es`)"
+      - "traefik.http.routers.a10portal-http.entrypoints=web"
+      - "traefik.http.routers.a10portal-http.middlewares=a10portal-redirect"
+      - "traefik.http.middlewares.a10portal-redirect.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.a10portal-redirect.redirectscheme.permanent=true"
+
+      # Opcional — camada extra de proteção (Basic Auth antes do portal):
+      # gere com: docker run --rm httpd:alpine htpasswd -nb user senha
+      # - "traefik.http.routers.a10portal.middlewares=a10portal-basicauth"
+      # - "traefik.http.middlewares.a10portal-basicauth.basicauth.users=user:$$2y$$05$$..."
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/', timeout=5)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  a10flash-logs:
+  a10flash-db:
+
+networks:
+  traefik-public:
+    external: true

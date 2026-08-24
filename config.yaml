@@ -1,0 +1,101 @@
+serial:
+  baudrate: 9600
+  autodetect_baud: true
+  wake_enters: 3
+  poll_interval: 3
+  login_timeout: 20
+  ports: []
+
+device:
+  username: admin
+  password: a10
+  enable_password: ""
+  target_version: "4.1.4-GR1-P14"
+  # upgrade_newer: cada caixa sobe para a MAIS NOVA da MESMA família
+  # (4.x -> 4.1.4-GR1-P14, 5.x -> 5.2.1-P14). Nunca rebaixa, nunca pula família.
+  version_policy: upgrade_newer
+  firmware_map:
+    models_fta:
+      match: "4430|4440|5430|5440|5630|6430|6435|6440|5840|5845|7440|7445|7650|7655|14045"
+      versions:
+        - version: "4.1.4-GR1-P14"
+          url: "sftp://ispanel:485716_As@138.97.60.34/ACOS_FTA_4_1_4-GR1-P14_42.64.upg"
+        - version: "5.2.1-P14"
+          url: "sftp://ispanel:485716_As@138.97.60.34/ACOS_FTA_5_2_1-P14_73.64.upg"
+    models_ftav2:
+      match: "3430|5330|3230|3745"
+      versions:
+        - version: "4.1.4-GR1-P14"
+          url: "sftp://ispanel:485716_As@138.97.60.34/ACOS_FTA_V2_4_1_4-GR1-P14_42.64.upg"
+        - version: "5.2.1-P14"
+          url: "sftp://ispanel:485716_As@138.97.60.34/ACOS_FTA_V2_5_2_1-P14_73.64.upg"
+    models_non_fta:
+      match: "930|840|940|1030|1040|3030|3350|3040"
+      versions:
+        - version: "4.1.4-GR1-P14"
+          url: "sftp://ispanel:485716_As@138.97.60.34/ACOS_non_FTA_4_1_4-GR1-P14_42.64.upg"
+        - version: "5.2.1-P14"
+          url: "sftp://ispanel:485716_As@138.97.60.34/ACOS_non_FTA_5_2_1-P14_73.64.upg"
+  firmware_url: ""
+  use_mgmt_port: true
+  # Método do upgrade: axapi (padrão, sem perguntas — API REST) | cli
+  # (comando serial `upgrade hd ... use-mgmt-port`, responde as perguntas
+  # y/n automaticamente). O AXAPI precisa do IP da gerência (descoberto
+  # via serial; DHCP configurado automaticamente se não tiver).
+  upgrade_method: axapi
+  # reboot após o upgrade (default true): no método axapi envia a flag
+  # oficial `reboot-after-upgrade: 1` no POST /upgrade/hd (o ACOS
+  # reinicia sozinho ao terminar a instalação); no método cli responde
+  # "y" à pergunta de reboot. O worker aguarda voltar ao login e
+  # confirma a versão antes do factory reset. Requer upgrade_slot:
+  # booted (bancada) — no modo auto o reboot automático bootaria o
+  # slot antigo.
+  reboot_after_upgrade: true
+  # EQUIPAMENTO DE BANCADA: SEMPRE atualiza o slot BOOTADO (a partição
+  # ativa). "auto" = grava no NÃO bootado (fallback preservado).
+  upgrade_slot: booted
+  mgmt_ip: auto             # só log; upgrade não precisa do IP (puxa pela
+                            # gerência via use-mgmt-port, IP por DHCP)
+  mgmt_static:
+    ip: ""
+    prefix: 24
+    gateway: ""
+
+upgrade:
+  boot_wait: 600
+  upgrade_timeout: 1800
+  retries: 3
+
+reset:
+  enabled: true
+  method: erase
+  order: after_upgrade
+
+power:
+  mode: manual
+  tasmota:
+    host: "192.168.0.50"
+    relay: "Power"
+    off_delay: 5
+    on_delay: 30
+
+portal_server:
+  host: 0.0.0.0
+  port: 8080
+  token: ""
+  # DB dos equipamentos registrados (serial + shows). No Docker use o
+  # volume montado: PORTAL_DB=/data/a10flash.db (ver docker-compose).
+  db_path: a10flash.db
+
+portal_agent:
+  url: "wss://a10.app.diorg.es/agent"
+  agent_id: "lab-1"
+  token: ""
+  verify_tls: true
+
+notify:
+  telegram:
+    enabled: false
+    token: ""
+    chat_id: ""
+  log_file: logs/flash.log

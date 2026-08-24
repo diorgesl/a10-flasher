@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>a10-flasher — Portal</title>
+<style>
+  :root {
+    --bg: #0f1419; --panel: #1a212b; --border: #2a3441;
+    --text: #dbe4ee; --muted: #8b98a9;
+    --green: #2ecc71; --red: #e74c3c; --blue: #3498db;
+    --orange: #f39c12; --gray: #6c7a89; --purple: #9b59b6;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 14px/1.5 "SF Mono", Consolas, "DejaVu Sans Mono", monospace;
+    padding: 16px; max-width: 1400px; margin: 0 auto;
+  }
+  header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+  h1 { font-size: 18px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--gray); display: inline-block; }
+  .dot.on { background: var(--green); box-shadow: 0 0 8px var(--green); }
+  .dot.off { background: var(--red); }
+  .muted { color: var(--muted); font-size: 12px; }
+  .badge {
+    display: inline-block; padding: 2px 10px; border-radius: 10px;
+    font-size: 12px; font-weight: bold; text-transform: uppercase;
+  }
+  .st-waiting { background: #22303f; color: var(--gray); }
+  .st-running { background: #1c3448; color: var(--blue); }
+  .st-paused { background: #3d3315; color: var(--orange); }
+  .st-success { background: #14351f; color: var(--green); }
+  .st-failed, .st-manual_required { background: #3d1713; color: var(--red); }
+  .st-aborted { background: #2c1d3d; color: var(--purple); }
+
+  .agents { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+  .agent-chip {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 16px;
+    padding: 4px 12px; font-size: 12px; display: flex; gap: 8px; align-items: center;
+  }
+  .agent-chip.offline { opacity: .5; }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+  .card h3 { font-size: 14px; margin-bottom: 6px; display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+  .card .agent { color: var(--muted); font-size: 11px; }
+  .card .row { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin: 2px 0; }
+  .card .row b { color: var(--text); font-weight: normal; }
+  .actions { margin-top: 10px; display: flex; gap: 6px; }
+  button {
+    background: #26313f; color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 5px 10px; font: inherit; font-size: 12px; cursor: pointer;
+  }
+  button:hover { background: #31404f; }
+  button.danger:hover { background: #4a1d18; border-color: var(--red); }
+  button.ok:hover { background: #14351f; border-color: var(--green); }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+
+  .empty { color: var(--muted); text-align: center; padding: 30px; border: 1px dashed var(--border); border-radius: 8px; }
+
+  .devices-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 8px; }
+  .devices-table th, .devices-table td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+  .devices-table th { color: var(--muted); font-weight: normal; font-size: 11px; text-transform: uppercase; }
+  .devices-table tr:hover td { background: #1e2834; }
+  .devices-table .upd-yes { color: var(--green); }
+  .devices-table .upd-no { color: var(--muted); }
+  .dev-row { cursor: pointer; }
+  .dev-detail { background: #0b0f14; border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin: 0 0 16px; }
+  .dev-detail h4 { font-size: 11px; color: var(--muted); margin: 8px 0 4px; text-transform: uppercase; }
+  .dev-detail pre { white-space: pre-wrap; word-break: break-word; font: inherit; font-size: 12px; color: var(--text); }
+
+  .log {
+    background: #0b0f14; border: 1px solid var(--border); border-radius: 8px;
+    height: 300px; overflow-y: auto; padding: 10px; font-size: 12px;
+  }
+  .log .line { white-space: pre-wrap; word-break: break-word; }
+  .log .t { color: var(--muted); }
+  .log .info { color: var(--blue); }
+  .log .ok { color: var(--green); }
+  .log .warn { color: var(--orange); }
+  .log .error { color: var(--red); }
+  .toolbar { display: flex; gap: 10px; margin-bottom: 8px; align-items: center; }
+  select, input {
+    background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 4px 8px; font: inherit; font-size: 12px;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>⚡ a10-flasher</h1>
+  <span class="dot" id="conn"></span>
+  <span class="muted" id="connLabel">desconectado</span>
+  <span class="muted" style="margin-left:auto" id="clock"></span>
+</header>
+
+<div class="agents" id="agents"></div>
+<div class="cards" id="cards"></div>
+
+<div class="toolbar" style="margin-top:8px">
+  <span class="muted">📦 Equipamentos registrados:</span>
+  <button id="reloadDevices">atualizar</button>
+  <span class="muted" id="devCount"></span>
+</div>
+<div id="devices"></div>
+
+<div class="toolbar">
+  <span class="muted">Eventos:</span>
+  <select id="filter">
+    <option value="">todos</option>
+  </select>
+  <button id="clearLog">limpar</button>
+  <span class="muted" id="logCount"></span>
+</div>
+<div class="log" id="log"></div>
+
+<script>
+(function () {
+  "use strict";
+  const STATUS = {
+    waiting: ["aguardando", "st-waiting"],
+    running: ["processando", "st-running"],
+    paused: ["pausado", "st-paused"],
+    success: ["concluído", "st-success"],
+    skipped: ["já processada", "st-waiting"],
+    failed: ["falhou", "st-failed"],
+    aborted: ["abortado", "st-aborted"],
+    manual_required: ["intervenção manual", "st-manual_required"],
+  };
+  const agents = {};   // agent_id -> {online, devices: {key: status}}
+  const paused = {};   // key -> bool
+  let devices = [];    // equipamentos registrados (resumo do DB)
+  let openDetail = null; // serial aberto no detalhe
+  let ws = null;
+  let token = localStorage.getItem("a10flash_token") || "";
+
+  const $ = (id) => document.getElementById(id);
+
+  if (!token) {
+    const t = prompt("Token do portal (ou deixe vazio):");
+    if (t) { token = t; localStorage.setItem("a10flash_token", t); }
+  }
+
+  function api(path, opts) {
+    opts = opts || {};
+    opts.headers = opts.headers || {};
+    if (token) opts.headers["X-Token"] = token;
+    return fetch(path, opts).then(async r => {
+      if (r.status === 401) throw new Error("token inválido");
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(body.detail || r.statusText);
+      return body;
+    });
+  }
+
+  function stamp(ts) {
+    const d = new Date((ts || 0) * 1000);
+    return d.toLocaleTimeString("pt-BR");
+  }
+
+  function esc(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+
+  function log(ev) {
+    if (!ev || ev.type === "snapshot") return;
+    const filter = $("filter").value;
+    const devLabel = ev.device ? ((ev.agent ? ev.agent + "/" : "") + ev.device) : "";
+    if (filter && devLabel && devLabel !== filter) return;
+    const level = ev.level || "info";
+    const stageTxt = ev.stage || ev.detail || "";
+    const msg = ev.message || stageTxt || "—";
+    const line = document.createElement("div");
+    line.className = "line " + level;
+    line.innerHTML = `<span class="t">${stamp(ev.ts)}</span> ` +
+      (devLabel ? `<b>[${esc(devLabel)}]</b> ` : "") + esc(msg);
+    $("log").appendChild(line);
+    while ($("log").children.length > 600) $("log").removeChild($("log").firstChild);
+    $("log").scrollTop = $("log").scrollHeight;
+    $("logCount").textContent = $("log").children.length + " linhas";
+  }
+
+  function setAgent(agentId, st) {
+    agents[agentId] = Object.assign({ devices: {} }, agents[agentId] || {}, st);
+  }
+  function setDevice(agentId, st) {
+    setAgent(agentId, {});
+    if (st.device) agents[agentId].devices[st.device] = Object.assign({}, agents[agentId].devices[st.device], st);
+  }
+
+  function applyStatus(msg) {
+    if (msg.type === "agent_status") { setAgent(msg.agent, { online: msg.online }); }
+    else if (msg.type === "device" && msg.event === "removed") {
+      setAgent(msg.agent || "", {});
+      if (agents[msg.agent] && agents[msg.agent].devices) delete agents[msg.agent].devices[msg.device];
+    } else if (msg.device) {
+      setDevice(msg.agent || "?", msg);
+    }
+    render();
+  }
+
+  function render() {
+    renderAgents();
+    renderDevices();
+  }
+
+  function renderAgents() {
+    const ids = Object.keys(agents).filter(a => a && a !== "?");
+    $("agents").innerHTML = ids.length ? ids.map(id => {
+      const a = agents[id];
+      const n = Object.keys(a.devices || {}).length;
+      return `<span class="agent-chip ${a.online ? "" : "offline"}">
+        <span class="dot ${a.online ? "on" : "off"}"></span>
+        ${esc(id)} <span class="muted">(${n} disp.)</span>
+      </span>`;
+    }).join("") : '<span class="muted">nenhum agente conectado</span>';
+  }
+
+  function renderDevices() {
+    // lista plana de dispositivos
+    const flat = [];
+    for (const [agentId, a] of Object.entries(agents)) {
+      if (agentId === "?") continue;
+      for (const [key, st] of Object.entries(a.devices || {})) {
+        flat.push({ agent: agentId, key, st });
+      }
+    }
+    const filter = $("filter");
+    const cur = filter.value;
+    filter.innerHTML = '<option value="">todos</option>' +
+      flat.map(f => `<option value="${esc(f.agent + "/" + f.key)}">${esc(f.agent + " / " + f.key)}</option>`).join("");
+    if (cur) filter.value = cur;
+
+    if (!flat.length) {
+      $("cards").innerHTML = '<div class="empty">Nenhum dispositivo — aguardando agentes e equipamentos...</div>';
+      return;
+    }
+    $("cards").innerHTML = flat.map(f => {
+      const st = f.st || {};
+      const [label, cls] = STATUS[st.state] || ["desconhecido", "st-waiting"];
+      const running = st.state === "running" || st.state === "paused";
+      const pausedBtn = paused[f.key] ? "Retomar" : "Pausar";
+      return `<div class="card">
+        <h3><span>${esc(f.key)}<br><span class="agent">${esc(f.agent)}</span></span>
+            <span class="badge ${cls}">${label}</span></h3>
+        <div class="row"><span>porta</span><b>${esc(st.port || "—")}</b></div>
+        <div class="row"><span>estágio</span><b>${esc(st.stage || "—")}</b></div>
+        <div class="row"><span>versão ACOS</span><b>${esc(st.version || "—")}</b></div>
+        <div class="row"><span>tentativas</span><b>${esc(st.attempts || 0)}</b></div>
+        <div class="row"><span>última atualização</span><b>${stamp(st.updated_at || st.ts)}</b></div>
+        ${st.message ? `<div class="row"><span>mensagem</span><b>${esc(st.message)}</b></div>` : ""}
+        <div class="actions">
+          ${running ? `<button class="toggle-pause" data-key="${esc(f.key)}">${pausedBtn}</button>` : ""}
+          <button class="danger btn-abort" data-key="${esc(f.key)}">Abortar</button>
+          <button class="ok btn-rerun" data-key="${esc(f.key)}">Repetir ciclo</button>
+        </div>
+      </div>`;
+    }).join("");
+
+    document.querySelectorAll(".toggle-pause").forEach(b => {
+      b.onclick = () => sendCmd(b.dataset.key, paused[b.dataset.key] ? "resume" : "pause");
+    });
+    document.querySelectorAll(".btn-abort").forEach(b => {
+      b.onclick = () => sendCmd(b.dataset.key, "abort");
+    });
+    document.querySelectorAll(".btn-rerun").forEach(b => {
+      b.onclick = () => sendCmd(b.dataset.key, "rerun");
+    });
+  }
+
+  function sendCmd(device, command) {
+    let reason;
+    if (command === "abort") {
+      reason = prompt("Motivo do abort (opcional):");
+      if (reason === null) return;
+    }
+    const payload = JSON.stringify({ type: "cmd", device, command, reason });
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(payload);
+    } else {
+      api(`/api/devices/${encodeURIComponent(device)}/cmd`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ command, reason }),
+      }).then(r => log({ type: "log", level: "info", device,
+        message: `comando ${command}: ${r.message}` }))
+        .catch(e => log({ type: "log", level: "error", device, message: e.message }));
+    }
+  }
+
+  // ------------------------------------------------ equipamentos (DB)
+  function fmtDate(ts) {
+    if (!ts) return "—";
+    return new Date(ts * 1000).toLocaleString("pt-BR");
+  }
+
+  function loadDevices() {
+    return api("/api/devices").then(d => {
+      devices = d.devices || [];
+      renderDevicesTable();
+    }).catch(e => log({ type: "log", level: "error", message: "devices: " + e.message }));
+  }
+
+  function renderDevicesTable() {
+    $("devCount").textContent = devices.length + " registrado(s)";
+    if (!devices.length) {
+      $("devices").innerHTML = '<div class="empty">Nenhum equipamento registrado ainda — os A10 concluídos aparecem aqui.</div>';
+      return;
+    }
+    $("devices").innerHTML = `<table class="devices-table"><tr>
+        <th>Serial</th><th>Modelo</th><th>Versão</th><th>Atualizado</th>
+        <th>Agente</th><th>Registrado</th></tr>` +
+      devices.map(d => `<tr class="dev-row" data-serial="${esc(d.serial)}">
+        <td>${esc(d.serial)}</td>
+        <td>${esc(d.model || "—")}</td>
+        <td>${esc(d.version || "—")}</td>
+        <td class="${d.upgraded ? "upd-yes" : "upd-no"}">${d.upgraded ? "✓ sim" : "não"}</td>
+        <td>${esc(d.agent || "—")}</td>
+        <td>${fmtDate(d.updated_at)}</td>
+      </tr>`).join("") + `</table>`;
+    document.querySelectorAll(".dev-row").forEach(tr => {
+      tr.onclick = () => toggleDetail(tr.dataset.serial);
+    });
+    if (openDetail) showDetail(openDetail);
+  }
+
+  function toggleDetail(serial) {
+    openDetail = (openDetail === serial) ? null : serial;
+    const el = $("devDetail");
+    if (el) el.remove();
+    if (openDetail) showDetail(serial);
+  }
+
+  function showDetail(serial) {
+    api("/api/devices/" + encodeURIComponent(serial)).then(d => {
+      let el = $("devDetail");
+      if (!el) {
+        el = document.createElement("div");
+        el.id = "devDetail";
+        el.className = "dev-detail";
+        $("devices").appendChild(el);
+      }
+      el.innerHTML = `<div style="margin-bottom:8px">
+          <button class="danger" id="delDevice">apagar registro</button>
+          <span class="muted">serial: ${esc(d.serial)}</span>
+        </div>
+        <h4>show version</h4><pre>${esc(d.version_output || "—")}</pre>
+        <h4>show license-info</h4><pre>${esc(d.license_info || "—")}</pre>
+        <h4>show environment</h4><pre>${esc(d.environment || "—")}</pre>`;
+      $("delDevice").onclick = () => {
+        if (!confirm("Apagar o registro " + serial + "?")) return;
+        api("/api/devices/" + encodeURIComponent(serial), { method: "DELETE" })
+          .then(() => { openDetail = null; loadDevices(); })
+          .catch(e => log({ type: "log", level: "error", message: "apagar: " + e.message }));
+      };
+    }).catch(e => log({ type: "log", level: "error", message: "detalhe: " + e.message }));
+  }
+
+  function setConn(ok) {
+    const dot = $("conn");
+    dot.className = "dot " + (ok ? "on" : "off");
+    $("connLabel").textContent = ok ? "conectado" : "desconectado";
+  }
+
+  function connect() {
+    setConn(false);
+    if (ws) { try { ws.close(); } catch (e) {} }
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    const url = `${proto}://${location.host}/ws` + (token ? `?token=${encodeURIComponent(token)}` : "");
+    ws = new WebSocket(url);
+    ws.onopen = () => setConn(true);
+    ws.onclose = () => { setConn(false); setTimeout(connect, 3000); };
+    ws.onerror = () => { try { ws.close(); } catch (e) {} };
+    ws.onmessage = (ev) => {
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch (e) { return; }
+      if (msg.type === "snapshot") {
+        for (const [aid, a] of Object.entries(msg.agents || {})) setAgent(aid, a);
+        (msg.events || []).forEach(log);
+        render();
+      } else if (msg.type === "status" || msg.type === "agent_status" || msg.type === "device") {
+        applyStatus(msg);
+      } else if (msg.type === "device_saved") {
+        loadDevices();   // novo registro no DB -> atualiza a tabela
+      } else if (msg.type === "device_deleted") {
+        loadDevices();   // registro apagado -> atualiza a tabela
+      } else if (msg.type === "pong" || msg.type === "cmd_ack" || msg.type === "welcome") {
+        // acks/welcome: aparecem como eventos de log do servidor
+      } else {
+        log(msg);
+      }
+    };
+  }
+
+  $("clearLog").onclick = () => { $("log").innerHTML = ""; $("logCount").textContent = ""; };
+  $("reloadDevices").onclick = loadDevices;
+  setInterval(() => { $("clock").textContent = new Date().toLocaleTimeString("pt-BR"); }, 1000);
+  setInterval(() => { if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "ping" })); }, 15000);
+
+  api("/api/status").then(s => {
+    for (const [aid, a] of Object.entries(s.agents || {})) setAgent(aid, a);
+    render();
+  }).catch(e => log({ type: "log", level: "error", message: "REST: " + e.message }));
+  loadDevices();
+  connect();
+})();
+</script>
+</body>
+</html>

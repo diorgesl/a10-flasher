@@ -1,0 +1,17 @@
+[Unit]
+Description=a10-flasher — automação de firmware A10 Thunder (ACOS)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/a10-flasher
+ExecStart=/opt/a10-flasher/.venv/bin/python -m a10flash.monitor_cli --config /opt/a10-flasher/config.yaml
+Restart=always
+RestartSec=10
+# Serial USB: o usuário precisa estar no grupo dialout (ou rodar como root)
+User=root
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

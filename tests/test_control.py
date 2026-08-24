@@ -1,0 +1,242 @@
+"""Testes de controle do worker via mailbox: abort, pause/resume,
+e comandos pelo monitor (portal)."""
+
+import os
+import sys
+import threading
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from a10flash.bus import EventBus  # noqa: E402
+from a10flash.mailbox import Mailbox  # noqa: E402
+from a10flash.monitor import PortMonitor  # noqa: E402
+from a10flash.notify import Notifier  # noqa: E402
+from a10flash.power import PowerController  # noqa: E402
+from a10flash.worker import FlashWorker  # noqa: E402
+from fake_axapi import FakeAxapiServer  # noqa: E402
+from fake_device import FakeA10  # noqa: E402
+
+
+def make_cfg(**over):
+    cfg = {
+        "serial": {"baudrate": 9600, "login_timeout": 5,
+                   "poll_interval": 1, "ports": []},
+        "device": {
+            "username": "admin", "password": "a10", "enable_password": "",
+            "target_version": "4.1.4",
+            "firmware_url": "scp://svc:secret@10.0.0.99/fw/ACOS_4.1.4.upg",
+            "use_mgmt_port": True, "upgrade_slot": "auto",
+            "collect_wait": 0,
+            "mgmt_ip": "auto",
+            "mgmt_static": {"ip": "", "prefix": 24, "gateway": ""},
+        },
+        "upgrade": {"boot_wait": 30, "upgrade_timeout": 60, "retries": 1},
+        "reset": {"enabled": True, "method": "erase", "order": "after_upgrade"},
+        "power": {"mode": "manual"},
+        "notify": {"log_file": None},
+    }
+
+    def merge(base, extra):
+        for k, v in extra.items():
+            if isinstance(v, dict) and isinstance(base.get(k), dict):
+                merge(base[k], v)
+            else:
+                base[k] = v
+
+    merge(cfg, over)
+    return cfg
+
+
+def run_worker_thread(worker, result_holder):
+    def _run():
+        result_holder["result"] = worker.run()
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    return t
+
+
+def test_mailbox_e_drain():
+    mb = Mailbox()
+    assert mb.drain() == []
+    mb.send({"command": "abort"})
+    mb.send({"command": "pause"})
+    cmds = mb.drain()
+    assert [c["command"] for c in cmds] == ["abort", "pause"]
+    assert mb.drain() == []
+
+
+def test_bus_publish_entre_threads():
+    bus = EventBus()
+    sid, q = bus.subscribe()
+    got = []
+
+    def pub():
+        time.sleep(0.1)
+        bus.publish({"type": "status", "device": "x"})
+
+    t = threading.Thread(target=pub)
+    t.start()
+    ev = q.get(timeout=2)
+    t.join()
+    got.append(ev)
+    assert got[0]["device"] == "x"
+    assert "ts" in got[0]
+    # histórico
+    hist = bus.history()
+    assert any(e["device"] == "x" for e in hist)
+
+
+def test_abort_no_reset():
+    """Abort enviado após o login -> ciclo para sem fazer reset."""
+    fake = FakeA10(version="4.1.4", booted="primary", reboot_delay=0.5)
+    axapi = FakeAxapiServer(sw_version="4.1.4")
+    try:
+        notifier = Notifier(log_file=None)
+        power = PowerController(make_cfg().get("power", {}), notifier)
+        mailbox = Mailbox()
+        worker = FlashWorker(make_cfg(), "fake-a10", fake.port, notifier,
+                             power, axapi_base_override=axapi.base_url(),
+                             mailbox=mailbox,
+                             on_event=lambda d, s, dt: (
+                                 mailbox.send({"command": "abort",
+                                               "reason": "teste"})
+                                 if dt == "logged_in" else None))
+        holder = {}
+        t = run_worker_thread(worker, holder)
+        t.join(timeout=60)
+        result = holder["result"]
+        assert result is not None, "worker não terminou"
+        assert result["status"] == "aborted", result
+        assert "erase" not in fake.commands
+        assert "reboot" not in fake.commands
+    finally:
+        axapi.stop()
+        fake.close()
+
+
+def test_pause_resume():
+    """Pause após o login segura o ciclo; resume libera (determinístico)."""
+    fake = FakeA10(version="4.1.4", booted="primary", reboot_delay=0.5)
+    axapi = FakeAxapiServer(sw_version="4.1.4")
+    try:
+        bus = EventBus()
+        notifier = Notifier(log_file=None, bus=bus)
+        power = PowerController(make_cfg().get("power", {}), notifier)
+        mailbox = Mailbox()
+        state = {"paused_once": False}
+
+        def on_event(d, s, dt):
+            # pausa apenas no PRIMEIRO login (o re-login pós-reboot
+            # também dispara logged_in e não deve pausar de novo)
+            if dt == "logged_in" and not state["paused_once"]:
+                state["paused_once"] = True
+                mailbox.send({"command": "pause"})
+
+        worker = FlashWorker(make_cfg(), "fake-a10", fake.port, notifier,
+                             power, axapi_base_override=axapi.base_url(),
+                             bus=bus, mailbox=mailbox, on_event=on_event)
+        holder = {}
+        t = run_worker_thread(worker, holder)
+
+        # aguarda o evento "paused" (garante que o pause pegou)
+        sid, q = bus.subscribe()
+        while True:
+            ev = q.get(timeout=10)
+            if ev.get("type") == "status" and ev.get("device") == "fake-a10":
+                if ev.get("state") == "paused":
+                    break
+        assert "show version" not in fake.commands, \
+            f"worker deveria estar pausado, comandos: {fake.commands}"
+
+        mailbox.send({"command": "resume"})
+        t.join(timeout=60)
+        result = holder["result"]
+        assert result is not None
+        assert result["status"] == "success", result
+        assert "show version" in fake.commands
+    finally:
+        axapi.stop()
+        fake.close()
+
+
+def test_monitor_comandos_do_portal():
+    """Monitor real + dispositivo fake: comando do portal aborta o ciclo."""
+    fake = FakeA10(version="4.1.4", booted="primary", reboot_delay=0.5)
+    axapi = FakeAxapiServer(sw_version="4.1.4")
+    try:
+        bus = EventBus()
+        notifier = Notifier(log_file=None, bus=bus)
+        power = PowerController(make_cfg().get("power", {}), notifier)
+        monitor = PortMonitor(make_cfg(), notifier, power, bus=bus)
+
+        key = os.path.basename(fake.port)   # chave = basename da porta
+
+        # aguarda o worker entrar em "running" e aborta pelo monitor
+        sid, q = bus.subscribe()
+        result_holder = {}
+
+        def abort_when_running():
+            while True:
+                ev = q.get(timeout=5)
+                if ev.get("type") == "status" and ev.get("device") == key:
+                    if ev.get("state") == "running":
+                        ok, msg = monitor.send_command(key, "abort",
+                                                       "teste portal")
+                        result_holder["cmd"] = (ok, msg)
+                        return
+
+        t_abort = threading.Thread(target=abort_when_running, daemon=True)
+        t_abort.start()
+
+        result = monitor.run(once_port=fake.port)
+        t_abort.join(timeout=10)
+        assert result["status"] == "aborted", result
+        ok, msg = result_holder.get("cmd", (False, "não enviado"))
+        assert ok, msg
+        assert "erase" not in fake.commands
+        st = monitor.device_statuses().get(key, {})
+        assert st.get("state") == "aborted"
+    finally:
+        axapi.stop()
+        fake.close()
+
+
+def test_snapshot_apenas_ttyusb(monkeypatch):
+    """O monitor procura APENAS /dev/ttyUSB* e /dev/ttyACM* — os nomes
+    by-id (/dev/serial/by-id) duplicavam a MESMA porta com outra chave."""
+    from a10flash import monitor as mon
+
+    def fake_tty():
+        return [("ttyUSB0", "/dev/ttyUSB0"), ("ttyACM0", "/dev/ttyACM0")]
+
+    monkeypatch.setattr(mon, "_tty_ports", fake_tty)
+    # se o snapshot ainda usasse by-id, isso apareceria na lista
+    monkeypatch.setattr(mon, "_byid_ports",
+                        lambda: [("usb-FTDI_FT232R-if00-port0",
+                                  "/dev/serial/by-id/usb-FTDI-if00-port0")])
+    monitor = PortMonitor(make_cfg(), Notifier(log_file=None),
+                          PowerController(make_cfg().get("power", {}),
+                                          Notifier(log_file=None)))
+    snap = monitor._snapshot()
+    assert set(snap) == {"ttyUSB0", "ttyACM0"}
+
+
+def test_snapshot_dedupe_mesma_porta_fisica(monkeypatch):
+    """Duas chaves apontando para o MESMO device real (defensivo):
+    só a primeira entra — uma porta não vira dois workers."""
+    from a10flash import monitor as mon
+
+    real = {"/dev/ttyUSB0": "/dev/ttyUSB0",
+            "/dev/ttyUSB1": "/dev/ttyUSB0"}  # ttyUSB1 = mesma física
+
+    monkeypatch.setattr(mon, "_tty_ports",
+                        lambda: [("ttyUSB0", "/dev/ttyUSB0"),
+                                 ("ttyUSB1", "/dev/ttyUSB1")])
+    monkeypatch.setattr(os.path, "realpath", lambda p: real.get(p, p))
+    monitor = PortMonitor(make_cfg(), Notifier(log_file=None),
+                          PowerController(make_cfg().get("power", {}),
+                                          Notifier(log_file=None)))
+    snap = monitor._snapshot()
+    assert "ttyUSB0" in snap
+    assert "ttyUSB1" not in snap   # duplicada — descartada
