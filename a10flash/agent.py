@@ -12,8 +12,6 @@ import threading
 import time
 import urllib.parse
 
-from .mailbox import Mailbox  # noqa: F401  (re-export para conveniência)
-
 
 class AgentClient:
     def __init__(self, url, token, bus, monitor, agent_id="lab",

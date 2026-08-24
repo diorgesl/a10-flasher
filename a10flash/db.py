@@ -17,8 +17,6 @@ import sqlite3
 import threading
 import time
 
-BLOB_FIELDS = ("license_info", "environment", "version_output")
-
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS devices (
     serial         TEXT PRIMARY KEY,

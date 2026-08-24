@@ -36,30 +36,33 @@ class Notifier:
         self.logger.addHandler(console)
 
     # ------------------------------------------------------------ base
-    def _send(self, level, device, message):
+    def _send(self, level, device, message, emoji=None):
+        """`level` é o nível do logging; `emoji` é o nível SEMÂNTICO
+        (info|ok|warn|error) — o dashboard (index.html) estiliza por ele
+        e o Telegram usa o emoji correspondente."""
         line = f"[{device}] {message}" if device else message
         getattr(self.logger, level)(line)
         if self.bus is not None:
-            self.bus.publish({"type": "log", "level": level,
+            self.bus.publish({"type": "log", "level": emoji or level,
                               "device": device, "message": message})
         if self.tg_token and self.tg_chat:
-            self._telegram(level, line)
+            self._telegram(line, emoji or level)
 
     def info(self, device, message):
         self._send("info", device, message)
 
     def ok(self, device, message):
-        self._send("info", device, f"{message}")
+        self._send("info", device, f"{message}", emoji="ok")
 
     def warn(self, device, message):
-        self._send("warning", device, message)
+        self._send("warning", device, message, emoji="warn")
 
     def error(self, device, message):
         self._send("error", device, message)
 
     # ---------------------------------------------------------- telegram
-    def _telegram(self, level, text):
-        emoji = _EMOJI.get(level, "")
+    def _telegram(self, text, emoji_key):
+        emoji = _EMOJI.get(emoji_key, "")
         payload = json.dumps({
             "chat_id": self.tg_chat,
             "text": f"{emoji} {text}",

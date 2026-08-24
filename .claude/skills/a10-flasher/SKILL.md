@@ -44,7 +44,16 @@ acompanhamento e registro dos equipamentos.
   console — log do A10 com `x~~~x`/`xbbbbbb`).
 - `PASSWORD_FUZZY_RE` (clock do A10 instável na senha) + `terminal length 0`
   pós-enable (sem isso o ACOS para no `---MORE---`).
-- **Sessão órfã bloqueia login** → sempre `logout` no fim do ciclo.
+- **Console já logado no 1º acesso (sessão órfã ou acesso manual): USA a
+  sessão** — `_login` decide o estado pelo FIM do buffer (prompt no fim =
+  sessão ativa → usa, sem derrubar+relogar; `Password:` na tela = login
+  pela metade → completa). Derrubar com exit/quit deixava o console mudo
+  (timeout 20s com `recebido: ''`) e o ciclo morria com "Falha
+  irrecuperável: RELIGUE O EQUIPAMENTO NA TOMADA".
+- **Login do 1º acesso com retry até o timeout**: `_cycle` usa
+  `_wait_and_login` (deadline `boot_wait`) em vez de 3 tentativas e
+  morrer — religar só é pedido depois do deadline esgotado.
+- `logout` no fim do ciclo continua (console limpo para o próximo).
 - `SerialException ... multiple access on port` = outro processo (screen,
   serviço antigo) segurando a porta — matar antes.
 - Diagnóstico: `tests/diag_login.py --auto|--scan|--login`

@@ -86,13 +86,16 @@ class SerialA10:
     # ------------------------------------------------------------ setup
     def open_and_login(self, login_timeout=20, baud_autodetect=True,
                        wake_enters=3, wake_delay=0.4):
-        """Abre a porta e faz login.
+        """Abre a porta e garante uma sessão logada.
 
         1. Tenta o baudrate configurado e, se `baud_autodetect`, os demais
            comuns até o console responder (o 9600 é o padrão dos Thunder).
         2. Envia ENTERs de "wake" — consoles de alguns modelos ficam
            dormentes e só mostram o login depois de Enter(s).
-        3. Faz o login completo (user/senha/enable).
+        3. Garante a sessão: se o console JÁ está logado (sessão órfã ou
+           acesso manual), usa a sessão existente; se está no meio de um
+           login ('Password:' na tela), completa; senão faz o login
+           completo (user/senha/enable).
         """
         self.close()
         bauds = [self.baudrate]
@@ -154,9 +157,9 @@ class SerialA10:
         if found != self.baudrate:
             self.baudrate = found  # lembra o que funcionou (para o log)
 
-        # fase 2: login completo. `seen` já contém o prompt/login lido na
-        # fase 1 — consoles dormentes não reenviam o banner, então o que
-        # foi lido não pode ser descartado.
+        # fase 2: login (ou reuso da sessão já logada). `seen` já contém o
+        # prompt/login/senha lido na fase 1 — consoles dormentes não
+        # reenviam o banner, então o que foi lido não pode ser descartado.
         self._login(login_timeout, initial=seen)
 
     def _wake_console(self, enters=3, delay=0.4, passive_timeout=3.0,
@@ -248,23 +251,43 @@ class SerialA10:
 
     # ------------------------------------------------------------- login
     def _login(self, timeout=20, initial=None):
+        """Loga no console — ou APROVEITA uma sessão já logada.
+
+        O estado é decidido pelo FIM do buffer (o que está na tela AGORA),
+        não pelo índice do expect: 'login:' pode casar em texto antigo do
+        banner, mas PROMPT_RE é ancorado no fim.
+          - prompt no fim ..... já existe sessão (órfã ou acesso manual):
+                                 USA a sessão — não derruba nem reloga
+                                 (derruba+reloga deixava o console mudo
+                                 e travava o ciclo pedindo para religar)
+          - 'Password:' ....... login (ou enable) pela metade: completa
+          - 'login:' .......... autentica do zero
+        """
         con = self.console
         if initial is not None:
             idx, buf = initial
         else:
-            idx, buf = con.expect([LOGIN_RE, PROMPT_RE], timeout=timeout)
+            idx, buf = con.expect(
+                [LOGIN_RE, PROMPT_RE, PASSWORD_RE, PASSWORD_FUZZY_RE],
+                timeout=timeout)
+        if re.search(PROMPT_RE, buf):
+            idx = 1
+        elif re.search(PASSWORD_RE, buf) or re.search(PASSWORD_FUZZY_RE, buf):
+            idx = 2
+        elif re.search(LOGIN_RE, buf):
+            idx = 0
+        else:
+            raise A10Error(
+                f"estado do console não reconhecido em {self.port}: "
+                f"{buf[-200:]!r}")
         if idx == 1:
-            # já existe uma sessão aberta no console (sessão órfã de um
-            # ciclo anterior ou acesso manual). O getty não mostra
-            # "login:" enquanto há sessão ativa — derruba com exit/quit
-            # para voltar ao estado limpo e logar de novo.
-            if buf.rstrip().endswith("#") or buf.rstrip().endswith(">"):
-                self._logout_existing(con)
-                idx, buf = con.expect([LOGIN_RE, PROMPT_RE], timeout=timeout)
-                if idx == 1:
-                    con.drain(0.3)
-                    return  # não deslogou (senha de logout?) — usa a sessão
-        if idx == 0:
+            # sessão já logada: usa. Se ficou em modo de configuração,
+            # volta ao exec privilegiado (senão os shows falham).
+            # (nível usuário 'ACOS>' sobe com enable no fim da função)
+            if "(config" in buf.lower():
+                con.sendline("end")
+                _, buf = con.expect([PROMPT_RE], timeout=timeout)
+        elif idx == 0:
             # prompt de login: autentica. Espera o prompt terminar de
             # "assentar" antes de digitar — o equipamento (getty em
             # ttyS0) pode estar terminando de transmitir o banner;
@@ -282,11 +305,27 @@ class SerialA10:
                 ) from exc
             con.sendline(self.password)
             try:
-                con.expect([PROMPT_RE], timeout=timeout)
+                _, buf = con.expect([PROMPT_RE], timeout=timeout)
             except ConsoleError as exc:
                 raise A10Error(
                     f"login falhou em {self.port} (senha/usuário errados?)"
                 ) from exc
+        else:
+            # 'Password:' já na tela — login (ou enable) pela metade,
+            # deixado por um acesso anterior: completa com a senha.
+            con.sendline(self.password)
+            try:
+                idx, buf = con.expect([PROMPT_RE, PASSWORD_FUZZY_RE],
+                                      timeout=timeout)
+            except ConsoleError as exc:
+                raise A10Error(
+                    f"login falhou em {self.port} (senha não aceita no "
+                    f"'Password:' já aberto — recebido: {exc})") from exc
+            if idx == 1:
+                # outro 'Password:' — era o do ENABLE (sessão em ACOS>):
+                # completa com a senha de enable
+                con.sendline(self.enable_password)
+                _, buf = con.expect([PROMPT_RE], timeout=timeout)
         # nível de usuário ("ACOS>") -> enable
         if not buf.rstrip().endswith("#"):
             con.sendline("enable")

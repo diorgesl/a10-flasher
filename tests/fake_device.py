@@ -19,7 +19,8 @@ class FakeA10:
                  model="Thunder 4430(S)", start_logged_in=False,
                  serial="A10TH-TEST-0001", ask_reboot=False,
                  confirm_style="yn", loading_seconds=0,
-                 drop_session_once=False, drop_to="login"):
+                 drop_session_once=False, drop_to="login",
+                 start_at_password=False):
         master, slave = pty.openpty()
         self._master = master
         os.set_blocking(master, False)   # leitura não-bloqueante (polling)
@@ -50,10 +51,14 @@ class FakeA10:
         self.reboot_delay = reboot_delay
         self.needs_enter = needs_enter   # console "dormente" (só responde a ENTER)
         self.start_logged_in = start_logged_in  # sessão órfã já ativa
+        # login PELA METADE: usuário digitado, tela parada em 'Password:'
+        self.start_at_password = start_at_password
         self.commands = []
         self._ctx = "priv"          # priv | config | if
         if start_logged_in:
             self._state = "priv"
+        elif start_at_password:
+            self._state = "login_pass"
         else:
             self._state = "sleep" if needs_enter else "login_user"
         self._pending = b""
@@ -189,6 +194,9 @@ class FakeA10:
         if self.start_logged_in:
             # sessão órfã: o console já está logado (prompt ACOS#)
             self._send("\r\nACOS# ")
+        elif self.start_at_password:
+            # login pela metade: tela parada em 'Password:'
+            self._send("\r\nPassword: ")
         elif not self.needs_enter:
             self._send("\r\nACOS login: ")
         while not self._stop:
@@ -216,6 +224,11 @@ class FakeA10:
                     # primeiro ENTER acorda o console (como no hardware real)
                     self._state = "login_user"
                     self._send("\r\nACOS login: ")
+                elif state == "login_pass":
+                    # ENTER na tela de senha: reimprime 'Password:' (como
+                    # o getty real) — é assim que o script detecta o
+                    # login pela metade no 1º acesso
+                    self._send("\r\nPassword: ")
                 elif state == "priv":
                     if (self._loading() and self.drop_session_once
                             and not self._drop_done):

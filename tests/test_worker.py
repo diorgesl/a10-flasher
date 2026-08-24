@@ -467,23 +467,71 @@ def test_console_dormente_wake():
         fake.close()
 
 
-def test_sessao_orfã_derrubada_no_login():
-    """Console com sessão órfã ativa (login antigo não deslogado) — o
-    script derruba com exit/quit e loga limpo. Reproduz o bug real:
-    'o login foi no a10 e não deslogou' → console mudo para o script."""
+def test_sessao_ja_logada_usada_no_login():
+    """Console já logado (sessão órfã — 'o login foi feito no a10 e não
+    deslogou'): o script USA a sessão existente. Reproduz o bug real:
+    antes o script derrubava a sessão com exit/quit e relogava — o
+    console ficava mudo e o ciclo morria pedindo para religar a tomada."""
     fake = FakeA10(version="4.1.4", booted="primary", start_logged_in=True,
                    reboot_delay=0.5)
     axapi = FakeAxapiServer(sw_version="4.1.4")
     try:
         result, _ = run_worker(make_cfg(), fake, axapi)
         assert result["status"] == "success", result
-        # derrubou a sessão órfã (exit) antes de logar de novo
-        assert "exit" in fake.commands, fake.commands
-        assert "admin" in fake.commands  # logou limpo depois
+        # usou a sessão: nada de exit nem de relogin ANTES do 1º show
+        primeiros = fake.commands[:fake.commands.index("show version")]
+        assert "exit" not in primeiros, fake.commands
+        assert "admin" not in primeiros, fake.commands
         assert "erase" in fake.commands  # e completou o ciclo
     finally:
         axapi.stop()
         fake.close()
+
+
+def test_login_pela_metade_password_na_tela():
+    """Console parado na tela 'Password:' no 1º acesso (alguém digitou o
+    usuário e parou): o script COMPLETA o login — antes acusava 'texto
+    não legível' (trava de baudrate) e pedia para religar."""
+    fake = FakeA10(version="4.1.4", start_at_password=True)
+    try:
+        cli = SerialA10(port=fake.port, baudrate=9600,
+                        username="admin", password="a10")
+        cli.open_and_login(login_timeout=10, baud_autodetect=False,
+                           wake_enters=0)
+        assert cli.get_version() == "4.1.4"
+        cli.close()
+    finally:
+        fake.close()
+
+
+def test_primeiro_login_retenta_ate_o_timeout():
+    """Login que falha no 1º acesso NÃO trava o ciclo: _wait_and_login
+    tenta de novo até o deadline (antes desistia após 3 tentativas e
+    pedia para religar o equipamento)."""
+    from a10flash.worker import FlashError
+
+    attempts = {"n": 0}
+
+    class CliBoaRuim:
+        baudrate = 9600  # evita o log de autodetect
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def open_and_login(self, **kwargs):
+            attempts["n"] += 1
+            if attempts["n"] < 3:
+                raise FlashError("console mudo (sessão órfã?)")
+
+    cfg = make_cfg(upgrade={"boot_wait": 20})
+    notifier = Notifier(log_file=None)
+    power = PowerController(cfg.get("power", {}), notifier)
+    worker = FlashWorker(cfg, "fake-a10", "/dev/null", notifier, power,
+                         cli_cls=CliBoaRuim)
+    cli = worker._wait_and_login(waiting_msg="Acessando console serial",
+                                 event_stage="logged_in")
+    assert attempts["n"] == 3
+    assert isinstance(cli, CliBoaRuim)
 
 
 FW_MAP = {

@@ -124,9 +124,6 @@ class SerialConsole:
                         return i, buf
             else:
                 time.sleep(0.05)
-    def wait_prompt(self, timeout=10.0):
-        """Aguarda o prompt do ACOS no fim do buffer."""
-        self.expect([PROMPT_RE], timeout=timeout)
 
 
 # Prompt do ACOS: "ACOS>", "ACOS#", "ACOS(config)#", "ACOS(config-if:management)#"

@@ -276,7 +276,13 @@ class FlashWorker:
             raise FlashError("target_version não configurada (config.yaml)")
 
         self._event("stage", "login")
-        cli = self._open_and_login()
+        # 1º acesso com retry até o timeout: se o login falhar (console
+        # mudo, caixa ainda iniciando), tenta de novo em vez de morrer
+        # pedindo para religar o equipamento
+        cli = self._wait_and_login(
+            waiting_msg="Acessando console serial — se o login falhar, "
+                        "tento de novo até o timeout",
+            event_stage="logged_in")
         upgraded = False
         try:
             self._wait_ready(cli)
@@ -426,22 +432,32 @@ class FlashWorker:
                 time.sleep(3)
         raise FlashError(f"não consegui abrir/login no console serial: {last}")
 
-    def _wait_and_login(self, timeout=None):
+    def _wait_and_login(self, timeout=None, waiting_msg=None,
+                        event_stage="back_online"):
+        """Login com retry até um deadline — não trava o ciclo.
+
+        Usado no 1º acesso (console pode estar mudo com uma sessão órfã
+        ou a caixa ainda iniciando — tenta de novo até o timeout em vez
+        de pedir para religar na primeira falha) e no retorno pós-reboot.
+        """
         up_cfg = self.cfg.get("upgrade", {})
         timeout = timeout or int(up_cfg.get("boot_wait", 600))
         self.notifier.info(
-            self.device, f"Aguardando equipamento voltar (até {timeout}s)...")
+            self.device,
+            f"{waiting_msg or 'Aguardando equipamento voltar'} "
+            f"(até {timeout}s)...")
         deadline = time.time() + timeout
         last = None
         while time.time() < deadline:
             try:
                 cli = self._open_and_login()
-                self._event("stage", "back_online")
+                self._event("stage", event_stage)
                 return cli
             except FlashError as exc:
                 last = exc
                 time.sleep(5)
-        raise FlashError(f"equipamento não voltou após reboot: {last}")
+        raise FlashError(f"sem login no console serial após {timeout}s: "
+                         f"{last}")
 
     def _wait_ready(self, cli, timeout=None):
         """Aguarda a caixa SAIR do modo LOADING (pós-reset/boot).
