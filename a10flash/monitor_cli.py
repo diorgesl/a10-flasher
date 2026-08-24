@@ -98,6 +98,9 @@ def main(argv=None):
             notifier=notifier,
             verify_tls=not (args.insecure
                             or agent_cfg.get("verify_tls") is False),
+            auto_update=bool(agent_cfg.get("auto_update", False)),
+            auto_update_interval=int(
+                agent_cfg.get("auto_update_interval", 600)),
         )
         agent.start()
         notifier.info(None, f"agente ativado -> {portal_url}")

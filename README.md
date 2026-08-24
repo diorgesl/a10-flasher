@@ -225,6 +225,9 @@ GET  /api/devices/{serial}      -> registro completo (shows salvos)
 DELETE /api/devices/{serial}   -> apaga o registro (limpeza manual)
 POST /api/devices               -> salva/atualiza um registro (upsert por serial)
 POST /api/devices/{key}/cmd     -> {"command": "abort|pause|resume|rerun"}
+POST /api/agents/{agent_id}/cmd -> {"command": "update"}  # atualiza o agente do lab
+                                   # (git fetch + reset + restart do systemd,
+                                   # só quando o lab está ocioso)
 WS   /ws?token=...              -> stream de eventos + envio de comandos
 ```
 

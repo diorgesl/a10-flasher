@@ -403,12 +403,14 @@ class FlashWorker:
             cli.close()
 
     # ---------------------------------------------------------- console
-    def _open_and_login(self):
+    def _open_and_login(self, deadline=None):
         dev_cfg = self.cfg.get("device", {})
         ser_cfg = self.cfg.get("serial", {})
         cfg_baud = int(ser_cfg.get("baudrate", 9600))
         last = None
         for attempt in range(3):
+            if deadline is not None and time.time() >= deadline:
+                break  # deadline estourou: para de tentar de verdade
             try:
                 cli = self.cli_cls(
                     port=self._resolve(),
@@ -453,7 +455,7 @@ class FlashWorker:
         last = None
         while time.time() < deadline:
             try:
-                cli = self._open_and_login()
+                cli = self._open_and_login(deadline=deadline)
                 self._event("stage", event_stage)
                 return cli
             except FlashError as exc:

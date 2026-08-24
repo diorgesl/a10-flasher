@@ -92,6 +92,13 @@ portal_agent:
   agent_id: "lab-1"
   token: "defina-um-token"    # mesmo token do portal_server
   verify_tls: true
+  # Auto-update do agente (default false): quando ligado, o agente checa
+  # o remoto a cada auto_update_interval segundos QUANDO OCIOSO (nunca no
+  # meio de um ciclo) e reinicia sozinho se houver código novo. Com
+  # desligado, a atualização é manual: POST /api/agents/{agent_id}/cmd
+  # {"command": "update"} no portal.
+  auto_update: false
+  auto_update_interval: 600
 
 notify:
   telegram:

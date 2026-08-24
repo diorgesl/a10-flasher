@@ -338,3 +338,25 @@ def test_agente_token_errado_rejeitado():
     finally:
         server.should_exit = True
         thread.join(timeout=5)
+
+
+def test_endpoint_agents_cmd_update_chega_no_agente():
+    """POST /api/agents/{id}/cmd {'command': 'update'} -> o agente
+    recebe o comando pelo WS (canal do agente, não do dispositivo)."""
+    portal = make_portal()
+    client = TestClient(portal.app)
+    with client.websocket_connect("/agent?token=segredo&agent=lab-1") as ws:
+        ws.send_json({"type": "hello", "agent": "lab-1"})
+        assert ws.receive_json()["type"] == "welcome"
+        r = client.post("/api/agents/lab-1/cmd",
+                        headers={"X-Token": "segredo"},
+                        json={"command": "update"})
+        assert r.status_code == 200, r.text
+        msg = ws.receive_json()
+        assert msg["type"] == "cmd"
+        assert msg["command"] == "update"
+    # agente desconectado -> 404
+    r = client.post("/api/agents/lab-1/cmd",
+                    headers={"X-Token": "segredo"},
+                    json={"command": "update"})
+    assert r.status_code == 404

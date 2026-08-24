@@ -4,7 +4,10 @@ Sem dependência de pexpect: fazemos um loop de leitura com regex contra o
 buffer acumulado, o que é suficiente e previsível para consoles de rede.
 """
 
+import os
 import re
+import select
+import termios
 import time
 import tty
 
@@ -44,6 +47,26 @@ class SerialConsole:
             tty.setraw(self.ser.fileno())
         except (OSError, ValueError):
             pass  # fd sem termios — tolerado
+        # RAW + modo "polling" (VMIN=0/VTIME=0): com o VMIN=1 do raw o
+        # read bloqueia até chegar 1 byte — e o O_NONBLOCK do fd NÃO vale
+        # em tty (o termios manda). Num select espúrio (pty no macOS,
+        # adaptadores ruins) o read ficaria preso além do timeout do
+        # expect — o wake do login travou ~195s por isso. VMIN=0/VTIME=0
+        # faz o read voltar na hora (vazio se nada chegou); quem dá o
+        # passo de polling é o _read_some (select+read com deadline).
+        try:
+            attr = termios.tcgetattr(self.ser.fileno())
+            attr[6][termios.VMIN] = 0
+            attr[6][termios.VTIME] = 0
+            termios.tcsetattr(self.ser.fileno(), termios.TCSANOW, attr)
+        except (OSError, ValueError, termios.error):
+            pass  # fd sem termios — tolerado
+        # Modo não-bloqueante no fd: seguro extra para fds que NÃO são
+        # tty (onde O_NONBLOCK vale); em tty quem manda é o VMIN acima.
+        try:
+            os.set_blocking(self.ser.fileno(), False)
+        except (OSError, ValueError):
+            pass  # fd sem fcntl — tolerado
         # DTR ativo: muitos consoles (incl. A10) só enviam o banner de
         # login quando detectam o terminal (DTR subiu). O screen deixa
         # DTR ativo — precisamos do mesmo. Em pty (testes) não há
@@ -60,8 +83,12 @@ class SerialConsole:
     # ---------------------------------------------------------- básicos
     def send(self, text):
         try:
+            # SEM flush(): o flush do pyserial é tcdrain — BLOQUEIA até o
+            # outro lado LER a saída (console mudo/caixa dormindo = wake e
+            # login travados por minutos, atravessando os timeouts). O
+            # write já é limitado pelo write_timeout se o buffer encher;
+            # a ordem dos bytes não depende de drain.
             self.ser.write(text.encode("utf-8", "replace"))
-            self.ser.flush()
         except serial.SerialException as exc:
             raise ConsoleError(
                 f"falha ao enviar para {self.port}: {exc}") from exc
@@ -73,14 +100,43 @@ class SerialConsole:
         """Consome lixo de entrada (banner de boot etc.) sem casar padrão."""
         end = time.time() + seconds
         while time.time() < end:
-            try:
-                self.ser.read(4096)
-            except serial.SerialException as exc:
-                raise ConsoleError(
-                    f"falha ao ler de {self.port}: {exc}") from exc
-            time.sleep(0.02)
+            self._read_some(0.02)
+
+    def _read_some(self, timeout):
+        """Lê o que estiver disponível sem bloquear além de `timeout`.
+
+        select + fd não-bloqueante: imune a select espúrio (pty/macOS,
+        adaptadores ruins) e nunca passa do prazo — o deadline do expect
+        é respeitado de verdade. Retorna bytes (b'' se nada chegou).
+        """
+        try:
+            ready, _, _ = select.select([self.ser.fileno()], [], [], timeout)
+        except (OSError, ValueError):
+            raise ConsoleError(f"falha ao ler de {self.port}: porta fechada")
+        if not ready:
+            return b""
+        try:
+            return os.read(self.ser.fileno(), 4096)
+        except BlockingIOError:
+            return b""
+        except OSError as exc:
+            raise ConsoleError(
+                f"falha ao ler de {self.port}: {exc}") from exc
 
     def close(self):
+        try:
+            # pyserial's close() faz flush() -> tcdrain, que BLOQUEIA até
+            # o par ler a saída (console mudo = trava). Fecha o fd direto
+            # (o SO descarta o buffer sem travar); is_open=False faz o
+            # close()/__del__ do pyserial virarem no-op (sem tcdrain e sem
+            # os.close duplo no GC).
+            os.close(self.ser.fileno())
+        except Exception:
+            pass
+        try:
+            self.ser.is_open = False
+        except Exception:
+            pass
         try:
             self.ser.close()
         except Exception:
@@ -110,12 +166,9 @@ class SerialConsole:
                     f"timeout aguardando {patterns!r} em {self.port}; "
                     f"recebido: {buf[-300:]!r}"
                 )
-            try:
-                chunk = self.ser.read(4096)
-            except serial.SerialException as exc:
-                # porta removida/desconectada no meio de uma leitura
-                raise ConsoleError(
-                    f"falha ao ler de {self.port}: {exc}") from exc
+            # read com budget limitado ao que resta do deadline — nunca
+            # bloqueia além dele (ver _read_some)
+            chunk = self._read_some(min(0.3, remaining))
             if chunk:
                 self.rx_bytes += len(chunk)
                 buf += chunk.decode("utf-8", "replace")

@@ -8,15 +8,22 @@ repassar ao monitor. Reconexão automática (intervalo fixo
 """
 
 import json
+import os
 import queue
+import subprocess
 import threading
 import time
 import urllib.parse
 
+# Branch que o lab puxa na atualização de código (auto-update / comando
+# `update` do portal). O sistema roda a partir do main do repositório.
+GIT_BRANCH = "origin/main"
+
 
 class AgentClient:
     def __init__(self, url, token, bus, monitor, agent_id="lab",
-                 notifier=None, reconnect_delay=3.0, verify_tls=True):
+                 notifier=None, reconnect_delay=3.0, verify_tls=True,
+                 auto_update=False, auto_update_interval=600):
         self.url = url
         self.token = token
         self.bus = bus
@@ -25,6 +32,8 @@ class AgentClient:
         self.notifier = notifier
         self.reconnect_delay = reconnect_delay
         self.verify_tls = verify_tls
+        self.auto_update = auto_update
+        self.auto_update_interval = auto_update_interval
         self._stop = threading.Event()
         self._ws = None
         self._lock = threading.Lock()
@@ -34,6 +43,9 @@ class AgentClient:
     # ------------------------------------------------------------ API
     def start(self):
         self._thread.start()
+        if self.auto_update:
+            threading.Thread(target=self._auto_update_loop, daemon=True,
+                             name="agent-autoupdate").start()
 
     def stop(self):
         self._stop.set()
@@ -143,6 +155,18 @@ class AgentClient:
     def _handle_cmd(self, msg):
         key = msg.get("device")
         command = msg.get("command")
+        if command == "update":
+            # comando do AGENTE (não do worker): atualiza o código do lab
+            # via git e reinicia o serviço (systemd Restart=always sobe
+            # com a versão nova). Nunca roda no meio de um ciclo.
+            res = self._do_update()
+            self.bus.publish({"type": "cmd_ack", "device": key,
+                              "command": command,
+                              "ok": res["status"] in ("updated", "unchanged"),
+                              "message": res["message"]})
+            if res["status"] == "updated":
+                self._restart()
+            return
         ok, message = False, "monitor indisponível"
         if self.monitor is not None:
             if command == "rerun":
@@ -152,6 +176,79 @@ class AgentClient:
                     key, command, msg.get("reason"))
         self.bus.publish({"type": "cmd_ack", "device": key,
                           "command": command, "ok": ok, "message": message})
+
+    # -------------------------------------------------------- auto-update
+    def _do_update(self, branch=GIT_BRANCH):
+        """Puxa o código novo do git (fetch + reset --hard) se o lab
+        estiver ocioso.
+
+        Retorna {"status": "busy"|"updated"|"unchanged"|"error",
+                 "message": str}. Só "updated" pede reinício do serviço.
+        """
+        if self.monitor is not None and self.monitor.has_active_cycle():
+            return {"status": "busy",
+                    "message": "ciclo em andamento — atualização recusada"}
+        if self.notifier:
+            self.notifier.info(None, "checando atualização do código (git)...")
+        try:
+            subprocess.run(["git", "fetch", "origin"], capture_output=True,
+                           timeout=60, check=True)
+            head = subprocess.run(["git", "rev-parse", "HEAD"],
+                                  capture_output=True, timeout=10,
+                                  check=True).stdout.strip()
+            remote = subprocess.run(["git", "rev-parse", branch],
+                                    capture_output=True, timeout=10,
+                                    check=True).stdout.strip()
+        except Exception as exc:
+            msg = f"falha ao checar atualização (git): {exc}"
+            if self.notifier:
+                self.notifier.warn(None, msg)
+            return {"status": "error", "message": msg}
+        if head == remote:
+            return {"status": "unchanged",
+                    "message": "código já está atualizado — nada a fazer"}
+        try:
+            subprocess.run(["git", "reset", "--hard", branch],
+                           capture_output=True, timeout=60, check=True)
+        except Exception as exc:
+            msg = f"falha ao aplicar atualização (git): {exc}"
+            if self.notifier:
+                self.notifier.warn(None, msg)
+            return {"status": "error", "message": msg}
+        if self.notifier:
+            self.notifier.info(
+                None, "código atualizado — reiniciando serviço (systemd "
+                      "Restart=always sobe com a versão nova)...")
+        return {"status": "updated",
+                "message": "código atualizado — reiniciando serviço"}
+
+    def _restart(self, delay=1.0):
+        """Sai do processo para o systemd reiniciar com o código novo.
+
+        Pausa curta antes do exit para o ack/evento sair pelo WS (o
+        portal mostra o resultado da atualização).
+        """
+
+        def _exit_later():
+            time.sleep(delay)
+            os._exit(0)
+
+        threading.Thread(target=_exit_later, daemon=True).start()
+
+    def _auto_check(self):
+        """Uma rodada do auto-update: só age conectado ao portal e com o
+        lab ocioso. Retorna o status do _do_update (ou "offline")."""
+        if not self.connected:
+            return {"status": "offline", "message": "desconectado do portal"}
+        res = self._do_update()
+        if res["status"] == "updated":
+            self._restart()
+        return res
+
+    def _auto_update_loop(self):
+        while not self._stop.is_set():
+            time.sleep(self.auto_update_interval)
+            self._auto_check()
 
     # ----------------------------------------------------------- envio
     def _forward(self, ws):

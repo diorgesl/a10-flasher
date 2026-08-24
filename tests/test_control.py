@@ -5,9 +5,11 @@ import os
 import sys
 import threading
 import time
+from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from a10flash.agent import AgentClient  # noqa: E402
 from a10flash.bus import EventBus  # noqa: E402
 from a10flash.mailbox import Mailbox  # noqa: E402
 from a10flash.monitor import PortMonitor  # noqa: E402
@@ -283,3 +285,170 @@ def test_erro_de_console_no_ciclo_entra_no_retry():
     result = worker.run()
     assert result["status"] == "manual_required", result
     assert len(power.cycles) == 1
+
+
+# ---------------------------------------------- auto-update do agente (git)
+class _StubMonitor:
+    """Monitor stub para os testes do comando `update` (nível agente)."""
+
+    def __init__(self, busy=False):
+        self.busy = busy
+        self.cmds = []
+
+    def has_active_cycle(self):
+        return self.busy
+
+    def send_command(self, key, command, reason=None):
+        self.cmds.append(("cmd", key, command))
+        return True, "ok"
+
+    def request_run(self, key):
+        self.cmds.append(("rerun", key))
+        return True, "ok"
+
+    def device_statuses(self):
+        return {}
+
+
+class _Git:
+    """Fake do subprocess.run para git (fetch / rev-parse / reset)."""
+
+    def __init__(self, head=b"aaa", remote=b"bbb"):
+        self.calls = []
+        self.head = head
+        self.remote = remote
+
+    def run(self, cmd, **kw):
+        self.calls.append(cmd)
+        if cmd == ["git", "fetch", "origin"]:
+            return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+        if cmd == ["git", "rev-parse", "HEAD"]:
+            return SimpleNamespace(returncode=0, stdout=self.head,
+                                   stderr=b"")
+        if cmd == ["git", "rev-parse", "origin/main"]:
+            return SimpleNamespace(returncode=0, stdout=self.remote,
+                                   stderr=b"")
+        if cmd == ["git", "reset", "--hard", "origin/main"]:
+            return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+        raise AssertionError(f"comando git inesperado: {cmd}")
+
+
+def _make_agent(bus, monitor, git=None):
+    cli = AgentClient("ws://portal", "", bus, monitor, agent_id="lab",
+                      notifier=Notifier(log_file=None))
+    if git is not None:
+        cli._git = git
+    return cli
+
+
+def test_monitor_has_active_cycle():
+    """Monitor sabe se há ciclo ativo (update não pode cair no meio)."""
+    monitor = PortMonitor(make_cfg(), Notifier(log_file=None),
+                          PowerController(make_cfg().get("power", {}),
+                                          Notifier(log_file=None)))
+    assert monitor.has_active_cycle() is False
+    class _Thread:
+        def is_alive(self):
+            return True
+    monitor.known["ttyUSB0"] = {"thread": _Thread()}
+    assert monitor.has_active_cycle() is True
+
+
+def test_agent_update_recusa_ciclo_ativo(monkeypatch):
+    """Comando update com ciclo ativo: recusa SEM rodar git."""
+    from a10flash import agent as agent_mod
+    git = _Git()
+    monkeypatch.setattr(agent_mod.subprocess, "run", git.run)
+    cli = _make_agent(EventBus(), _StubMonitor(busy=True))
+    res = cli._do_update()
+    assert res["status"] == "busy"
+    assert git.calls == []
+
+
+def test_agent_update_aplica_reset_quando_ha_mudanca(monkeypatch):
+    """Ocioso + HEAD != origin/main: faz fetch, reset --hard e pede
+    reinício (status updated)."""
+    from a10flash import agent as agent_mod
+    git = _Git(head=b"aaa", remote=b"bbb")
+    monkeypatch.setattr(agent_mod.subprocess, "run", git.run)
+    cli = _make_agent(EventBus(), _StubMonitor(busy=False))
+    res = cli._do_update()
+    assert res["status"] == "updated", res
+    assert ["git", "reset", "--hard", "origin/main"] in git.calls
+
+
+def test_agent_update_ja_atualizado_nao_reinicia(monkeypatch):
+    """Ocioso + HEAD == origin/main: nada a fazer, SEM reset."""
+    from a10flash import agent as agent_mod
+    git = _Git(head=b"aaa", remote=b"aaa")
+    monkeypatch.setattr(agent_mod.subprocess, "run", git.run)
+    cli = _make_agent(EventBus(), _StubMonitor(busy=False))
+    res = cli._do_update()
+    assert res["status"] == "unchanged", res
+    assert not any(c == ["git", "reset", "--hard", "origin/main"]
+                   for c in git.calls)
+
+
+def test_agent_cmd_update_reinicia_apos_atualizar(monkeypatch):
+    """Comando `update` via WS: NÃO vai para o monitor (é do agente),
+    publica ack ok e dispara o reinício quando atualizou."""
+    from a10flash import agent as agent_mod
+    monkeypatch.setattr(agent_mod.subprocess, "run",
+                        _Git(head=b"aaa", remote=b"bbb").run)
+    restarts = []
+    monkeypatch.setattr(AgentClient, "_restart",
+                        lambda self, *a, **k: restarts.append(1))
+    bus = EventBus()
+    sid, q = bus.subscribe()
+    monitor = _StubMonitor(busy=False)
+    cli = _make_agent(bus, monitor)
+    cli._handle_cmd({"device": "lab", "command": "update"})
+    ack = q.get(timeout=3)
+    assert ack["type"] == "cmd_ack"
+    assert ack["ok"] is True
+    assert restarts == [1]
+    assert monitor.cmds == []   # update não é comando de worker
+
+
+def test_agent_cmd_update_busy_nao_reinicia(monkeypatch):
+    """Comando `update` com ciclo ativo: ack ok=False, SEM reiniciar."""
+    from a10flash import agent as agent_mod
+    monkeypatch.setattr(agent_mod.subprocess, "run", _Git().run)
+    restarts = []
+    monkeypatch.setattr(AgentClient, "_restart",
+                        lambda self, *a, **k: restarts.append(1))
+    bus = EventBus()
+    sid, q = bus.subscribe()
+    cli = _make_agent(bus, _StubMonitor(busy=True))
+    cli._handle_cmd({"device": "lab", "command": "update"})
+    ack = q.get(timeout=3)
+    assert ack["type"] == "cmd_ack"
+    assert ack["ok"] is False
+    assert restarts == []
+
+
+def test_agent_auto_check_conectado_ocioso_atualiza_e_reinicia(monkeypatch):
+    """Auto-update (polling): conectado + ocioso + código novo ->
+    atualiza e reinicia sozinho."""
+    from a10flash import agent as agent_mod
+    monkeypatch.setattr(agent_mod.subprocess, "run",
+                        _Git(head=b"aaa", remote=b"bbb").run)
+    restarts = []
+    monkeypatch.setattr(AgentClient, "_restart",
+                        lambda self, *a, **k: restarts.append(1))
+    cli = _make_agent(EventBus(), _StubMonitor(busy=False))
+    cli._set_ws(object())   # conectado ao portal
+    res = cli._auto_check()
+    assert res["status"] == "updated", res
+    assert restarts == [1]
+
+
+def test_agent_auto_check_desconectado_nao_roda_git(monkeypatch):
+    """Auto-update (polling): desconectado do portal -> nem checa o git."""
+    from a10flash import agent as agent_mod
+    git = _Git()
+    monkeypatch.setattr(agent_mod.subprocess, "run", git.run)
+    cli = _make_agent(EventBus(), _StubMonitor(busy=False))
+    res = cli._auto_check()
+    assert res["status"] == "offline"
+    assert git.calls == []

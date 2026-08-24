@@ -34,6 +34,8 @@ from .notify import Notifier
 
 INDEX_HTML = os.path.join(os.path.dirname(__file__), "web", "index.html")
 COMMANDS = {"abort", "pause", "resume", "rerun"}
+# comandos de AGENTE (POST /api/agents/{id}/cmd) — não vão para workers
+AGENT_COMMANDS = {"update"}
 # tipos de mensagem aceitos dos agentes (WS /agent)
 AGENT_TYPES = {"status", "stage", "log", "cmd_ack", "device", "device_result"}
 
@@ -118,6 +120,33 @@ class PortalServer:
             ok, message = await self._route_command(
                 key, command, (body or {}).get("reason"))
             return JSONResponse({"ok": ok, "message": message})
+
+        @app.post("/api/agents/{agent_id}/cmd")
+        async def api_agent_cmd(agent_id: str, request: Request):
+            """Comando para o AGENTE (não para um dispositivo): update.
+
+            `update` faz o agente do lab puxar o código do git e
+            reiniciar o serviço — o comando vai direto no WS do agente.
+            """
+            self._authorize(request)
+            body = await request.json()
+            command = (body or {}).get("command")
+            if command not in AGENT_COMMANDS:
+                raise HTTPException(status_code=400,
+                                    detail=f"comando inválido: {command!r}")
+            rec = self.agents.get(agent_id)
+            if rec is None or not rec.get("online"):
+                raise HTTPException(status_code=404,
+                                    detail=f"agente não conectado: {agent_id}")
+            try:
+                await rec["ws"].send_json({
+                    "type": "cmd", "device": agent_id,
+                    "command": command, "reason": (body or {}).get("reason")})
+            except Exception:
+                raise HTTPException(status_code=502,
+                                    detail="falha ao enviar ao agente")
+            return JSONResponse({"ok": True,
+                                 "message": "comando enviado ao agente"})
 
         @app.websocket("/ws")
         async def ws_browser(websocket: WebSocket):

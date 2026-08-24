@@ -17,6 +17,12 @@ acompanhamento e registro dos equipamentos.
   `PORTAL_DB`).
 - **Lab** (PC ligado aos A10, conexão de SAÍDA — nunca abrir porta):
   `python -m a10flash.monitor_cli` — monitor serial + agente WS.
+- **Atualização de código do lab**: comando `update` via portal
+  (`POST /api/agents/{id}/cmd`) ou auto-update (`portal_agent.auto_update`
+  no config) — agente faz git fetch/reset --hard e SAI; o systemd
+  (`Restart=always`) sobe com o código novo. NUNCA atualiza com ciclo
+  ativo (`monitor.has_active_cycle()`); bootstrap inicial (clone do repo
+  + config.yaml) é manual, uma vez.
 - Cópia do usuário: `~/a10-flasher` em ServerLIVE (`willian@ServerLIVE`),
   roda com `--config ../config.yaml` (config fora do projeto).
 - Comunicação em pt-BR; código Python; token único no `.env` do docker e
@@ -53,6 +59,15 @@ acompanhamento e registro dos equipamentos.
 - **Login do 1º acesso com retry até o timeout**: `_cycle` usa
   `_wait_and_login` (deadline `boot_wait`) em vez de 3 tentativas e
   morrer — religar só é pedido depois do deadline esgotado.
+- **NUNCA `flush()`/tcdrain no serial**: o flush do pyserial é tcdrain
+  e BLOQUEIA até o A10 LER a saída — console mudo/caixa dormindo =
+  wake/login travados por minutos atravessando todos os timeouts.
+  `send` sem flush; `close` fecha o fd direto (is_open=False antes);
+  `VMIN=0/VTIME=0` no termios mantém os reads sem bloqueio.
+  ⚠️ Pendência de bancada: revalidar `diag_login.py --auto` em hardware
+  real na próxima oportunidade (sem tcdrain o script não espera mais o
+  A10 consumir cada send — ordem preservada pelo buffer do kernel,
+  mas confirmar no equipamento).
 - `logout` no fim do ciclo continua (console limpo para o próximo).
 - `SerialException ... multiple access on port` = outro processo (screen,
   serviço antigo) segurando a porta — matar antes.

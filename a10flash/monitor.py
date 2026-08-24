@@ -155,6 +155,11 @@ class PortMonitor:
         })
 
     # ------------------------------------------------------- comandos
+    def has_active_cycle(self):
+        """True enquanto há worker de flash rodando — a atualização de
+        código do agente não pode cair no meio de um ciclo."""
+        return any(r["thread"].is_alive() for r in self.known.values())
+
     def send_command(self, key, command, reason=None):
         """Envia comando (abort|pause|resume) para o worker da chave."""
         rec = self.known.get(key)
