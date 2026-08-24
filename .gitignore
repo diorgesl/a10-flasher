@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# estado local de sessão (j-space, testes) — não é do projeto
+.jspace/
+
+# logs e bancos locais
+logs/
+*.log
+*.db
+*.sqlite3
+processed_serials.json
+
+# segredos e config local (tokens do portal/telegram + credenciais sftp
+# embutidas nas URLs de firmware — o config real fica fora do projeto)
+config.yaml
+deploy/docker/.env

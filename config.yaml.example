@@ -19,23 +19,23 @@ device:
       match: "4430|4440|5430|5440|5630|6430|6435|6440|5840|5845|7440|7445|7650|7655|14045"
       versions:
         - version: "4.1.4-GR1-P14"
-          url: "sftp://ispanel:485716_As@138.97.60.34/ACOS_FTA_4_1_4-GR1-P14_42.64.upg"
+          url: "sftp://usuario:senha@SERVIDOR/ACOS_FTA_4_1_4-GR1-P14_42.64.upg"
         - version: "5.2.1-P14"
-          url: "sftp://ispanel:485716_As@138.97.60.34/ACOS_FTA_5_2_1-P14_73.64.upg"
+          url: "sftp://usuario:senha@SERVIDOR/ACOS_FTA_5_2_1-P14_73.64.upg"
     models_ftav2:
       match: "3430|5330|3230|3745"
       versions:
         - version: "4.1.4-GR1-P14"
-          url: "sftp://ispanel:485716_As@138.97.60.34/ACOS_FTA_V2_4_1_4-GR1-P14_42.64.upg"
+          url: "sftp://usuario:senha@SERVIDOR/ACOS_FTA_V2_4_1_4-GR1-P14_42.64.upg"
         - version: "5.2.1-P14"
-          url: "sftp://ispanel:485716_As@138.97.60.34/ACOS_FTA_V2_5_2_1-P14_73.64.upg"
+          url: "sftp://usuario:senha@SERVIDOR/ACOS_FTA_V2_5_2_1-P14_73.64.upg"
     models_non_fta:
       match: "930|840|940|1030|1040|3030|3350|3040"
       versions:
         - version: "4.1.4-GR1-P14"
-          url: "sftp://ispanel:485716_As@138.97.60.34/ACOS_non_FTA_4_1_4-GR1-P14_42.64.upg"
+          url: "sftp://usuario:senha@SERVIDOR/ACOS_non_FTA_4_1_4-GR1-P14_42.64.upg"
         - version: "5.2.1-P14"
-          url: "sftp://ispanel:485716_As@138.97.60.34/ACOS_non_FTA_5_2_1-P14_73.64.upg"
+          url: "sftp://usuario:senha@SERVIDOR/ACOS_non_FTA_5_2_1-P14_73.64.upg"
   firmware_url: ""
   use_mgmt_port: true
   # Método do upgrade: axapi (padrão, sem perguntas — API REST) | cli
@@ -82,7 +82,7 @@ power:
 portal_server:
   host: 0.0.0.0
   port: 8080
-  token: ""
+  token: "defina-um-token"
   # DB dos equipamentos registrados (serial + shows). No Docker use o
   # volume montado: PORTAL_DB=/data/a10flash.db (ver docker-compose).
   db_path: a10flash.db
@@ -90,7 +90,7 @@ portal_server:
 portal_agent:
   url: "wss://a10.app.diorg.es/agent"
   agent_id: "lab-1"
-  token: ""
+  token: "defina-um-token"    # mesmo token do portal_server
   verify_tls: true
 
 notify:
