@@ -27,7 +27,6 @@ def make_cfg(**over):
             "target_version": "4.1.4",
             "firmware_url": "scp://svc:secret@10.0.0.99/fw/ACOS_4.1.4.upg",
             "use_mgmt_port": True, "upgrade_slot": "auto",
-            "collect_wait": 0,
             "mgmt_ip": "auto",
             "mgmt_static": {"ip": "", "prefix": 24, "gateway": ""},
         },
@@ -240,3 +239,47 @@ def test_snapshot_dedupe_mesma_porta_fisica(monkeypatch):
     snap = monitor._snapshot()
     assert "ttyUSB0" in snap
     assert "ttyUSB1" not in snap   # duplicada — descartada
+
+
+def test_erro_de_console_no_ciclo_entra_no_retry():
+    """ConsoleError (queda do serial no MEIO do ciclo) usa o MESMO fluxo
+    de retry/energia do FlashError — não vira 'erro' seco sem retry."""
+    from a10flash.serial_console import ConsoleError
+
+    class DropCli:
+        def __init__(self, *args, **kwargs):
+            self.baudrate = 9600
+
+        def open_and_login(self, **kwargs):
+            pass
+
+        def wait_ready(self, timeout=None, on_wait=None):
+            return True
+
+        def get_version(self, timeout=None):
+            raise ConsoleError("serial caiu no meio do ciclo")
+
+        def logout(self, timeout=None):
+            pass
+
+        def close(self):
+            pass
+
+    class ManualPower:
+        mode = "manual"
+
+        def __init__(self):
+            self.cycles = []
+
+        def cycle(self, device, reason):
+            self.cycles.append(reason)
+            return False
+
+    cfg = make_cfg()
+    cfg["upgrade"]["retries"] = 2
+    power = ManualPower()
+    worker = FlashWorker(cfg, "fake-a10", "/dev/null",
+                         Notifier(log_file=None), power, cli_cls=DropCli)
+    result = worker.run()
+    assert result["status"] == "manual_required", result
+    assert len(power.cycles) == 1

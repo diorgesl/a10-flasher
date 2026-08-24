@@ -29,7 +29,6 @@ def make_cfg(**over):
             # testes aqui usam o fluxo CONTROLADO (false); o automático
             # (default real do worker) é coberto em testes específicos
             "reboot_after_upgrade": False,
-            "collect_wait": 0,
             "mgmt_ip": "auto",
             "mgmt_static": {"ip": "", "prefix": 24, "gateway": ""},
         },

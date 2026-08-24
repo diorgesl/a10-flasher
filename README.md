@@ -4,7 +4,7 @@ Automação de **upgrade de firmware + factory reset** de equipamentos **A10 Net
 
 Você só pluga o equipamento na porta serial do PC do laboratório e liga a energia
 — o script detecta o hotplug (`/dev/ttyUSB*`), faz login, verifica a versão ACOS,
-atualiza o firmware (via SCP na porta de gerência), aplica factory reset e mostra
+atualiza o firmware (via SFTP na porta de gerência), aplica factory reset e mostra
 tudo no portal (além de Telegram opcional).
 
 ## Arquitetura (duas partes, máquinas diferentes)
@@ -20,7 +20,7 @@ tudo no portal (além de Telegram opcional).
 ```
 
 - O **agente** conecta no portal (conexão de SAÍDA — não precisa abrir porta
-  no PC do laboratório) e reconecta sozinho com backoff.
+  no PC do laboratório) e reconecta sozinho (intervalo fixo entre tentativas).
 - O portal atende **vários laboratórios** ao mesmo tempo (agentes distintos).
 - Se o portal cair, o laboratório continua trabalhando normalmente (só perde
   o acompanhamento ao vivo; status é re-sincronizado na reconexão).
@@ -31,8 +31,8 @@ tudo no portal (além de Telegram opcional).
 porta serial aparece  →  login (admin/a10)  →  show version  →  show bootimage
      │
      ├─ versão < alvo?  ── SIM ──►  AXAPI (HTTPS na gerência):
-     │                              upgrade/hd { file-url: scp://... , use-mgmt-port: 1 }
-     │                              (o equipamento PUXA o firmware via SCP)
+     │                              upgrade/hd { file-url: sftp://... , use-mgmt-port: 1 }
+     │                              (o equipamento PUXA o firmware via SFTP)
      │                              → set bootimage → write memory → reboot
      │                              → aguarda voltar → confere versão
      │
@@ -59,8 +59,8 @@ Comandos usados no equipamento (padrão ACOS, validados contra documentação of
 
 O upgrade em si usa a **AXAPI REST** (`https://<ip-gerencia>/axapi/v3/`), conforme o
 fluxo oficial da A10 (projeto de referência: `ACOS-Upgrade`, da própria A10).
-O `file-url` aponta para um servidor SCP **alcançável pela rede de gerência** — o
-equipamento baixa o arquivo sozinho (SCP via porta de gerência, `use-mgmt-port: 1`).
+O `file-url` aponta para um servidor SCP/SFTP **alcançável pela rede de gerência** — o
+equipamento baixa o arquivo sozinho (SCP/SFTP via porta de gerência, `use-mgmt-port: 1`).
 
 No método `cli` (serial), o ACOS pergunta se quer reiniciar após instalar — com
 `reboot_after_upgrade: true` (default) o worker responde "y": a caixa reinicia
@@ -96,15 +96,15 @@ device:
   firmware_map:
     models_fta:
       match: "4430|4440"        # regex contra o modelo (show version)
-      url: "scp://user:pass@SRV/fw/ACOS_4.1.4-GR1-P14_A....upg"
+      url: "sftp://user:pass@SRV/fw/ACOS_4.1.4-GR1-P14_A....upg"
     models_ftav2:
       match: "3430|5330"
-      url: "scp://user:pass@SRV/fw/ACOS_4.1.4-GR1-P14_F....upg"
+      url: "sftp://user:pass@SRV/fw/ACOS_4.1.4-GR1-P14_F....upg"
     models_non_fta:
       match: "930|840|vThunder"
-      url: "scp://user:pass@SRV/fw/ACOS_4.1.4-GR1-P14_n....upg"
+      url: "sftp://user:pass@SRV/fw/ACOS_4.1.4-GR1-P14_n....upg"
 
-  firmware_url: "scp://usuario:senha@IP_SERVIDOR/caminho/ACOS_4.1.4.upg"
+  firmware_url: "sftp://usuario:senha@IP_SERVIDOR/caminho/ACOS_4.1.4.upg"
   # ^ fallback quando não há firmware_map ou nenhum grupo casa
 
 portal_server:                 # na máquina DO SERVIDOR
@@ -122,13 +122,10 @@ portal_agent:                  # no PC DO LABORATÓRIO
   comuns), `wake_enters: 3` — alguns consoles dormem até receber Enter
   antes do login aparecer.
 
-- O servidor SCP precisa ter `sshd` rodando e ser alcançável **pela porta de
+- O servidor SFTP precisa ter `sshd` rodando e ser alcançável **pela porta de
   gerência do equipamento** (mesma VLAN de gerência).
 - `mgmt_ip: auto` lê o IP do equipamento via serial. Se o equipamento estiver sem
   IP (config de fábrica), preencha `mgmt_static` e o script aplica via CLI.
-- `device.collect_wait` (default 30s): após o reboot, a caixa ainda está
-  iniciando — o worker espera N segundos antes de coletar serial/shows para o
-  registro no portal (o `show license-info` vem vazio se coletar cedo demais).
 - O monitor procura **apenas** `/dev/ttyUSB*` e `/dev/ttyACM*` (os nomes by-id do
   `/dev/serial/by-id` duplicavam a mesma porta com outra chave, gerando dois
   workers na mesma caixa).
@@ -225,6 +222,7 @@ GET  /api/status                -> agentes + dispositivos + estados
 GET  /api/events?limit=100      -> últimos eventos (log em tempo real)
 GET  /api/devices               -> equipamentos registrados (resumo)
 GET  /api/devices/{serial}      -> registro completo (shows salvos)
+DELETE /api/devices/{serial}   -> apaga o registro (limpeza manual)
 POST /api/devices               -> salva/atualiza um registro (upsert por serial)
 POST /api/devices/{key}/cmd     -> {"command": "abort|pause|resume|rerun"}
 WS   /ws?token=...              -> stream de eventos + envio de comandos
@@ -250,7 +248,11 @@ real** do portal + agente via WebSocket em loopback:
 .venv/bin/python -m pytest tests/ -v
 ```
 
-Cobre: upgrade SCP (slot correto, use-mgmt-port), verificação de versão, factory
+> `pytest` não está em `requirements.txt` (dependência apenas de
+> desenvolvimento): instale antes com
+> `uv pip install --python .venv/bin/python pytest`.
+
+Cobre: upgrade (slot correto, use-mgmt-port), verificação de versão, factory
 reset antes/depois, IP estático, falha de login pedindo intervenção, abort/pause
 dos workers, autenticação do portal e fluxo agente ↔ portal.
 
@@ -259,8 +261,9 @@ dos workers, autenticação do portal e fluxo agente ↔ portal.
 - ⚠️ **Equipamento fora de produção**: o ciclo apaga a configuração (factory reset).
 - A licença **não** é perdida no reset (`system-reset`/`erase` não afetam licença —
   confirmado no fórum oficial da A10).
-- O upgrade grava no **slot não-bootado** por padrão (mais seguro: se der errado,
-  o slot atual continua intacto). Para sobrescrever o slot atual: `upgrade_slot: booted`.
+- O upgrade grava no **slot bootado** por padrão (bancada — o equipamento volta
+  ao padrão de fábrica no fim do ciclo). Para preservar o fallback (gravar no
+  slot não-bootado): `upgrade_slot: auto`.
 - Senha padrão de fábrica (`admin`/`a10`) — depois do reset, o equipamento volta
   ao padrão; lembre de definir uma senha nova na configuração inicial.
 - Sem `token` no portal, qualquer um na rede pode ver e comandar — **defina o token**.
@@ -277,7 +280,7 @@ a10flash/
   monitor.py       # detecção de hotplug e spawn de workers
   worker.py        # máquina de estados do ciclo (+ abort/pause/resume)
   a10_cli.py       # console serial ACOS (login, show, erase, reboot...)
-  a10_axapi.py     # cliente AXAPI (upgrade via SCP, bootimage, write...)
+  a10_axapi.py     # cliente AXAPI (upgrade via SFTP, bootimage, write...)
   serial_console.py# camada serial com expect
   version.py       # parsing/comparação de versões ACOS
   notify.py        # log + Telegram + eventos no bus

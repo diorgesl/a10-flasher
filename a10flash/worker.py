@@ -150,7 +150,10 @@ class FlashWorker:
                 self._publish_status(result={"status": "aborted",
                                              "error": str(exc)})
                 return {"status": "aborted", "error": str(exc)}
-            except FlashError as exc:
+            except (FlashError, ConsoleError) as exc:
+                # ConsoleError (queda do serial no MEIO do ciclo) entra no
+                # MESMO fluxo de retry/energia do FlashError — sem isso o
+                # ciclo morria como erro seco, sem retry nem power-cycle.
                 self.notifier.error(
                     self.device,
                     f"Falha (tentativa {attempts}/{max_attempts}): {exc}",

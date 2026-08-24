@@ -3,7 +3,8 @@
 O agente roda no MESMO PC dos A10, conecta no portal via WebSocket
 (conexão de SAÍDA, sem abrir porta), envia os eventos do laboratório em
 tempo real e recebe comandos do operador (abort/pause/resume/rerun) para
-repassar ao monitor. Reconexão automática com backoff.
+repassar ao monitor. Reconexão automática (intervalo fixo
+`reconnect_delay` entre tentativas).
 """
 
 import json
@@ -59,10 +60,12 @@ class AgentClient:
             self._ws = ws
 
     def _connect_url(self):
+        # só o agent_id vai na URL; o token segue como header x-token —
+        # query string fica nos logs do Traefik/uvicorn (o portal aceita
+        # os dois formatos)
         sep = "&" if "?" in self.url else "?"
-        q = urllib.parse.quote(self.token, safe="")
         a = urllib.parse.quote(self.agent_id, safe="")
-        return f"{self.url}{sep}token={q}&agent={a}"
+        return f"{self.url}{sep}agent={a}"
 
     # ----------------------------------------------------------- loop
     def _run(self):
@@ -82,8 +85,10 @@ class AgentClient:
                           "(verify_tls=false) — conexão sujeita a MITM")
         while not self._stop.is_set():
             try:
+                headers = ({"x-token": self.token} if self.token else None)
                 with wsc.connect(self._connect_url(), open_timeout=10,
-                                 ssl=ssl_ctx) as ws:
+                                 ssl=ssl_ctx,
+                                 additional_headers=headers) as ws:
                     self._set_ws(ws)
                     if self.notifier:
                         self.notifier.info(

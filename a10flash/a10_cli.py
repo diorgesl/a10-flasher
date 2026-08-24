@@ -42,8 +42,6 @@ MGMT_IP_RE = re.compile(
     r"(?:\s*/\s*(\d+)|,\s*Subnet\s+mask\s+is\s+(\d+\.\d+\.\d+\.\d+))",
     re.IGNORECASE,
 )
-SLOT_MAP = {"primary": "pri", "secondary": "sec"}
-
 # Mensagem de reboot no console (upgrade hd com reboot automático,
 # system-reset): a caixa avisa antes de derrubar a sessão.
 REBOOTING_RE = re.compile(r"rebooting|restarting|resetting|will reboot",
