@@ -1104,6 +1104,7 @@ def test_marcacao_antecipada_bloqueia_segundo_worker_mesma_caixa():
     from a10flash.power import PowerController
 
     with tempfile.TemporaryDirectory() as tmp:
+        orig_exists = os.path.exists   # restaurado no finally (unplug fake)
         state_file = os.path.join(tmp, "processed_serials.json")
         cfg = make_cfg(monitor={"state_file": state_file})
         cfg["upgrade"]["boot_wait"] = 5   # pós-reset falha rápido
@@ -1126,12 +1127,16 @@ def test_marcacao_antecipada_bloqueia_segundo_worker_mesma_caixa():
                             mgmt_ip="10.0.0.10", reboot_delay=0.2,
                             serial="A10TH-LOOP-002")
             w2 = FlashWorker(cfg, "fake-a10", fake2.port, notifier, power,
-                             axapi_base_override=axapi.base_url())
+                             axapi_base_override=axapi.base_url(),
+                             on_event=lambda d, s, det:
+                             _fake_port_gone(fake2) if det == "test_mode"
+                             else None)
             r2 = w2.run()
             assert r2["status"] == "skipped", r2
             assert fake2.commands.count("reboot") == 0
             assert fake2.commands.count("erase") == 0
         finally:
+            os.path.exists = orig_exists   # desfaz o patch do unplug
             axapi.stop()
             fake1.close()
 
@@ -1170,9 +1175,13 @@ def test_cache_antiloop_skips_caixa_processada():
                             mgmt_ip="10.0.0.10", reboot_delay=0.5,
                             serial="A10TH-LOOP-001")
             w2 = FlashWorker(cfg, "fake-a10", fake2.port, notifier, power,
-                             axapi_base_override=axapi.base_url())
+                             axapi_base_override=axapi.base_url(),
+                             on_event=lambda d, s, det:
+                             _fake_port_gone(fake2) if det == "test_mode"
+                             else None)
             r2 = w2.run()
             assert r2["status"] == "skipped", r2
+            assert r2.get("test_mode") is True  # skip também monitora
             assert fake2.commands.count("reboot") == 0  # NADA destrutivo
             assert fake2.commands.count("erase") == 0
             # 3º ciclo FORÇADO ('Repetir ciclo'): reprocessa
@@ -1243,6 +1252,35 @@ def test_modo_teste_coleta_uptime_e_encerra_na_desconexao(monkeypatch):
         assert len(samples) >= 2
         assert samples[0]["uptime_s"] == 7380
         assert samples[0]["serial"] == "A10TH-TEST-0001"
+    finally:
+        axapi.stop()
+        fake.close()
+
+
+def test_caixa_ja_processada_entra_no_modo_teste():
+    """Caixa já processada (skip): SEM ações destrutivas, MAS entra no
+    modo teste — fica conectada coletando uptime até desconectar."""
+    import tempfile
+    fake = FakeA10(version="4.1.4", booted="primary", reboot_delay=0.5,
+                   serial="A10TH-LOOP-009", uptime_s=7380)
+    axapi = FakeAxapiServer(sw_version="4.1.4")
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = make_cfg(monitor={
+                "state_file": os.path.join(tmp, "s.json")})
+            r1, _ = run_worker(cfg, fake, axapi)
+            assert r1["status"] == "success", r1
+            fake2 = FakeA10(version="4.1.4", booted="primary",
+                            reboot_delay=0.5, serial="A10TH-LOOP-009",
+                            uptime_s=7380)
+            r2, _ = run_worker(cfg, fake2, axapi)
+            assert r2["status"] == "skipped", r2
+            assert r2.get("test_mode") is True, r2
+            assert r2.get("uptime_samples", 0) >= 1
+            # NADA destrutivo no 2º ciclo
+            assert "erase" not in fake2.commands
+            assert "reboot" not in fake2.commands
+            fake2.close()
     finally:
         axapi.stop()
         fake.close()

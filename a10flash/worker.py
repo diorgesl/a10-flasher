@@ -333,11 +333,16 @@ class FlashWorker:
                 "Coletando retrato do equipamento (serial + shows)...")
             device_info = self._collect_device_info(cli)
 
-            # anti-loop: caixa já processada -> pula (sem ações destrutivas)
+            # anti-loop: caixa já processada -> pula as AÇÕES
+            # DESTRUTIVAS, mas entra no modo teste mesmo assim — a caixa
+            # fica na bancada conectada, monitorada (uptime) até
+            # desconectar
             serial = device_info.get("serial")
             if self._skip_if_processed(serial, version):
+                samples = self._test_mode(cli, serial)
                 return {"status": "skipped", "version": version,
                         "upgraded": False, "serial": serial,
+                        "test_mode": True, "uptime_samples": samples,
                         "summary": f"caixa {serial} já processada — "
                                    "nada a fazer"}
 
@@ -1072,12 +1077,18 @@ class FlashWorker:
         samples = 0
         next_at = 0.0   # primeira coleta é imediata
         self._state = "test_mode"
-        self._event("stage", "test_mode")
         self._publish_status()
         self.notifier.info(
             self.device,
             f"Modo teste: coletando uptime a cada {interval / 3600:.4g}h "
             "até a caixa ser desconectada...")
+        # a amostra imediata sai ANTES do evento `test_mode` (o evento é
+        # o gatilho de "desconexão" nos testes/helpers — a coleta de
+        # entrada não pode ser perdida por ele)
+        if self._collect_uptime(cli, serial):
+            samples += 1
+        next_at = time.time() + interval
+        self._event("stage", "test_mode")
         while True:
             self._check_commands()   # abort do portal encerra (FlashAbort)
             if not os.path.exists(self.port_path):
