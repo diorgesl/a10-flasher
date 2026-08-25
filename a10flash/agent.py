@@ -18,6 +18,10 @@ import urllib.parse
 # Branch que o lab puxa na atualização de código (auto-update / comando
 # `update` do portal). O sistema roda a partir do main do repositório.
 GIT_BRANCH = "origin/main"
+# Raiz do repositório (onde o código ESTÁ rodando) — o git roda AQUI,
+# independente do cwd de quem iniciou o processo (fetch já falhou com
+# exit 128 quando o agente subia de outro diretório: "not a git repo").
+CODE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 class AgentClient:
@@ -178,6 +182,17 @@ class AgentClient:
                           "command": command, "ok": ok, "message": message})
 
     # -------------------------------------------------------- auto-update
+    @staticmethod
+    def _git_failure_detail(exc):
+        """O MOTIVO real do git (stderr) para a mensagem — sem isso o
+        operador só vê 'exit status 128' e não sabe o que aconteceu
+        (ex.: remoto 'origin' não configurado)."""
+        try:
+            detail = (exc.stderr or b"").decode("utf-8", "replace").strip()
+        except Exception:
+            detail = ""
+        return detail or str(exc)
+
     def _do_update(self, branch=GIT_BRANCH):
         """Puxa o código novo do git (fetch + reset --hard) se o lab
         estiver ocioso.
@@ -192,15 +207,16 @@ class AgentClient:
             self.notifier.info(None, "checando atualização do código (git)...")
         try:
             subprocess.run(["git", "fetch", "origin"], capture_output=True,
-                           timeout=60, check=True)
+                           timeout=60, check=True, cwd=CODE_DIR)
             head = subprocess.run(["git", "rev-parse", "HEAD"],
                                   capture_output=True, timeout=10,
-                                  check=True).stdout.strip()
+                                  check=True, cwd=CODE_DIR).stdout.strip()
             remote = subprocess.run(["git", "rev-parse", branch],
                                     capture_output=True, timeout=10,
-                                    check=True).stdout.strip()
+                                    check=True, cwd=CODE_DIR).stdout.strip()
         except Exception as exc:
-            msg = f"falha ao checar atualização (git): {exc}"
+            msg = (f"falha ao checar atualização (git): "
+                   f"{self._git_failure_detail(exc)}")
             if self.notifier:
                 self.notifier.warn(None, msg)
             return {"status": "error", "message": msg}
@@ -209,9 +225,11 @@ class AgentClient:
                     "message": "código já está atualizado — nada a fazer"}
         try:
             subprocess.run(["git", "reset", "--hard", branch],
-                           capture_output=True, timeout=60, check=True)
+                           capture_output=True, timeout=60, check=True,
+                           cwd=CODE_DIR)
         except Exception as exc:
-            msg = f"falha ao aplicar atualização (git): {exc}"
+            msg = (f"falha ao aplicar atualização (git): "
+                   f"{self._git_failure_detail(exc)}")
             if self.notifier:
                 self.notifier.warn(None, msg)
             return {"status": "error", "message": msg}

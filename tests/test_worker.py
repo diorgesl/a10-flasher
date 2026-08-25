@@ -115,9 +115,33 @@ def test_versao_ja_atual():
         fake.close()
 
 
+def test_upgrade_acos_2x_forca_metodo_cli():
+    """ACOS 2.x NÃO tem AXAPI (HTTPS na gerência recusa conexão) — o
+    upgrade é via CLI serial (`upgrade hd ... sftp://`) MESMO com
+    upgrade_method: axapi no config. Reproduz o bug real de bancada:
+    caixa 2.7.2 -> AXAPI connection refused -> ciclo morria pedindo
+    para religar o equipamento."""
+    fake = FakeA10(version="2.7.2-P12-SP3", booted="primary",
+                   mgmt_ip="172.31.31.211", reboot_delay=0.5)
+    fake.next_versions = {"primary": "4.1.4"}
+    axapi = FakeAxapiServer(sw_version="4.1.4")
+    try:
+        result, _ = run_worker(make_cfg(), fake, axapi)
+        assert result["status"] == "success", result
+        assert result["upgraded"] is True
+        # upgrade via SERIAL (comando `upgrade hd`), NUNCA via AXAPI
+        assert _upgrade_cmd(fake), fake.commands
+        assert not [c for c in axapi.calls if c[1].endswith("/upgrade/hd")]
+    finally:
+        axapi.stop()
+        fake.close()
+
+
 def test_upgrade_metodo_cli():
     """upgrade_method: cli -> comando serial `upgrade hd ... use-mgmt-port`
-    (sem precisar do IP da gerência) + bootimage + write memory."""
+    (sem precisar SABER o IP da gerência — mas garante DHCP se a caixa
+    está sem IP, pois o download passa pela gerência) + bootimage +
+    write memory."""
     fake = FakeA10(version="4.0.0", booted="primary", mgmt_ip="",
                    reboot_delay=0.5)
     fake.next_versions = {"primary": "4.1.4"}
@@ -134,8 +158,10 @@ def test_upgrade_metodo_cli():
         assert "scp://svc:secret@10.0.0.99/fw/ACOS_4.1.4.upg" in up[0]
         assert any(c.startswith("bootimage") for c in cmds)
         assert "write memory" in cmds
-        # sem IP configurado e método cli: NÃO configura DHCP
-        assert "ip address dhcp" not in cmds
+        # sem IP e método cli: configura DHCP — o use-mgmt-port puxa a
+        # imagem PELA GERÊNCIA e a caixa sem IP não alcança o servidor
+        # sftp (agente autônomo)
+        assert "ip address dhcp" in cmds
     finally:
         axapi.stop()
         fake.close()
@@ -393,6 +419,45 @@ def test_upgrade_com_reset_antes():
         assert fake.commands.index("erase") < fake.commands.index("reboot")
         assert any(c[0] == "POST" and c[1].endswith("/upgrade/hd")
                    for c in axapi.calls)
+    finally:
+        axapi.stop()
+        fake.close()
+
+
+def test_mgmt_ip_legado_172_31_31_31_ativa_dhcp():
+    """Caixa que chega com o IP legado 172.31.31.31 (estático da bancada
+    antiga, sem rota pro servidor sftp): o worker troca para DHCP antes
+    do upgrade — agente autônomo, sem religar nada."""
+    fake = FakeA10(version="4.0.0", booted="primary",
+                   mgmt_ip="172.31.31.31", reboot_delay=0.5)
+    fake.next_versions = {"primary": "4.1.4"}
+    axapi = FakeAxapiServer(sw_version="4.1.4")
+    try:
+        result, _ = run_worker(make_cfg(), fake, axapi)
+        assert result["status"] == "success", result
+        assert result["upgraded"] is True
+        # trocou o IP legado por DHCP antes do upgrade
+        assert "ip address dhcp" in fake.commands, fake.commands
+        assert fake.mgmt_ip == "10.0.0.50"  # DHCP atribuiu (fake)
+    finally:
+        axapi.stop()
+        fake.close()
+
+
+def test_upgrade_cli_com_ip_legado_ativa_dhcp():
+    """Método cli (serial) também puxa pela gerência (use-mgmt-port):
+    IP legado 172.31.31.31 -> troca para DHCP mesmo com upgrade_method:
+    cli no config."""
+    fake = FakeA10(version="4.0.0", booted="primary",
+                   mgmt_ip="172.31.31.31", reboot_delay=0.5)
+    fake.next_versions = {"primary": "4.1.4"}
+    axapi = FakeAxapiServer(sw_version="4.1.4")
+    try:
+        cfg = make_cfg(device={"upgrade_method": "cli"})
+        result, _ = run_worker(cfg, fake, axapi)
+        assert result["status"] == "success", result
+        assert "ip address dhcp" in fake.commands, fake.commands
+        assert _upgrade_cmd(fake), fake.commands
     finally:
         axapi.stop()
         fake.close()

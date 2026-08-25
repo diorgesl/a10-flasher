@@ -22,6 +22,11 @@ from .version import compare_versions, version_major, version_tuple
 
 SLOT_MAP = {"primary": "pri", "secondary": "sec"}
 
+# IP de gerência LEGADO da bancada (estático antigo): caixa que chega
+# com esse IP não alcança o servidor sftp (sub-rede antiga) — o worker
+# troca para DHCP antes do upgrade (agente autônomo, sem religar nada).
+MGMT_IP_LEGADO = "172.31.31.31"
+
 
 class FlashError(Exception):
     """Falha no ciclo — tratada com retry + ciclo de energia."""
@@ -339,9 +344,13 @@ class FlashWorker:
                 # AXAPI precisa; o método "cli" puxa pela gerência sem
                 # saber o IP da caixa
                 method = dev_cfg.get("upgrade_method", "axapi")
-                mgmt_ip = None
-                if method != "cli":
-                    mgmt_ip = self._ensure_mgmt_ip(cli)
+                # a gerência precisa alcançar o servidor sftp nos DOIS
+                # métodos (use-mgmt-port) — garante o IP sempre (trocando
+                # o legado 172.31.31.31 por DHCP); o AXAPI ainda usa o IP
+                # descoberto
+                mgmt_ip = self._ensure_mgmt_ip(cli)
+                if method == "cli":
+                    mgmt_ip = None   # cli puxa pela gerência sem saber o IP
                 self._do_upgrade(cli, mgmt_ip, dec)
                 cli = self._wait_and_login()
                 self._wait_ready(cli)
@@ -505,6 +514,27 @@ class FlashWorker:
         """
         dev_cfg = self.cfg.get("device", {})
         got = cli.get_mgmt_ip()
+        if got and got[0] == MGMT_IP_LEGADO:
+            # IP legado: ativa DHCP (configure terminal / interface
+            # management / ip address dhcp) e espera o DHCP atribuir
+            # um IP novo — sem isso o download da imagem falha
+            self.notifier.info(
+                self.device,
+                f"Gerência com IP legado {MGMT_IP_LEGADO} — ativando "
+                "DHCP para alcançar o servidor sftp...")
+            cli.set_mgmt_dhcp()
+            deadline = time.time() + wait
+            while time.time() < deadline:
+                got = cli.get_mgmt_ip()
+                if got and got[0] != MGMT_IP_LEGADO:
+                    self.notifier.info(
+                        self.device, f"Gerência com IP {got[0]} (DHCP)")
+                    return got[0]
+                time.sleep(3)
+            raise FlashError(
+                f"DHCP não substituiu o IP legado {MGMT_IP_LEGADO} em "
+                f"{wait}s — confira o cabo na porta de gerência e o "
+                "servidor DHCP")
         if got:
             return got[0]
         st = dev_cfg.get("mgmt_static") or {}
@@ -562,6 +592,18 @@ class FlashWorker:
         )
 
         method = dev_cfg.get("upgrade_method", "axapi")
+        # ACOS 2.x não tem AXAPI (o HTTPS da gerência recusa conexão) —
+        # nessas caixas o upgrade é NECESSARIAMENTE via CLI serial
+        # (`upgrade hd ... sftp://`), independente do config. Repro real
+        # de bancada: caixa 2.7.2 com method axapi -> connection refused
+        # -> ciclo morria pedindo para religar o equipamento.
+        cur_major = version_major(self._version or "")
+        if method != "cli" and cur_major is not None and cur_major < 3:
+            self.notifier.info(
+                self.device,
+                f"ACOS {self._version} (2.x) sem AXAPI — upgrade via "
+                "CLI serial (sftp)")
+            method = "cli"
         if method == "cli":
             self._upgrade_via_cli(cli, slot, firmware_url, alvo, up_cfg)
         else:

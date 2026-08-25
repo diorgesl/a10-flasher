@@ -78,6 +78,17 @@ acompanhamento e registro dos equipamentos.
 
 - `upgrade_method: axapi` (padrão; sem as perguntas do CLI) | `cli`
   (responde as perguntas: salvar config→y, reboot→n).
+- **ACOS 2.x NÃO tem AXAPI** (HTTPS da gerência recusa conexão) — com
+  versão atual 2.x o método vira `cli` automaticamente (serial
+  `upgrade hd ... sftp://`), independente do config. Repro de bancada:
+  caixa 2.7.2 com method axapi → connection refused → ciclo morria
+  pedindo para religar o equipamento.
+- **IP de gerência legado `172.31.31.31`** (estático da bancada antiga,
+  sem rota pro servidor sftp): `_ensure_mgmt_ip` troca para DHCP
+  (`conf`/`interface management`/`ip address dhcp`) e espera o IP novo —
+  roda nos DOIS métodos (o `use-mgmt-port` do cli também puxa pela
+  gerência; caixa sem IP também ganha DHCP). Agente autônomo, sem
+  religar nada.
 - AXAPI: POST `/upgrade/hd` com `file-url` (sftp:// aceito direto) +
   `use-mgmt-port: 1`; o equipamento PUXA a imagem pela gerência. Detalhes
   do polling em `references/axapi-upgrade.md`.

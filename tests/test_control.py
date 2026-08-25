@@ -315,11 +315,13 @@ class _Git:
 
     def __init__(self, head=b"aaa", remote=b"bbb"):
         self.calls = []
+        self.kw_calls = []
         self.head = head
         self.remote = remote
 
     def run(self, cmd, **kw):
         self.calls.append(cmd)
+        self.kw_calls.append(kw)
         if cmd == ["git", "fetch", "origin"]:
             return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
         if cmd == ["git", "rev-parse", "HEAD"]:
@@ -367,7 +369,9 @@ def test_agent_update_recusa_ciclo_ativo(monkeypatch):
 
 def test_agent_update_aplica_reset_quando_ha_mudanca(monkeypatch):
     """Ocioso + HEAD != origin/main: faz fetch, reset --hard e pede
-    reinício (status updated)."""
+    reinício (status updated). O git roda no DIRETÓRIO DO CÓDIGO,
+    independente do cwd do processo (fetch já falhou com exit 128
+    quando o agente subia de outro diretório)."""
     from a10flash import agent as agent_mod
     git = _Git(head=b"aaa", remote=b"bbb")
     monkeypatch.setattr(agent_mod.subprocess, "run", git.run)
@@ -375,6 +379,8 @@ def test_agent_update_aplica_reset_quando_ha_mudanca(monkeypatch):
     res = cli._do_update()
     assert res["status"] == "updated", res
     assert ["git", "reset", "--hard", "origin/main"] in git.calls
+    assert git.kw_calls and all(
+        kw.get("cwd") == agent_mod.CODE_DIR for kw in git.kw_calls)
 
 
 def test_agent_update_ja_atualizado_nao_reinicia(monkeypatch):
@@ -452,3 +458,25 @@ def test_agent_auto_check_desconectado_nao_roda_git(monkeypatch):
     res = cli._auto_check()
     assert res["status"] == "offline"
     assert git.calls == []
+
+
+def test_agent_update_falha_de_git_mostra_o_motivo(monkeypatch):
+    """git fetch falhando (ex.: sem remoto 'origin'): o MOTIVO do git vai
+    para a mensagem — o operador vê o 'fatal' no log, não só exit 128."""
+    import subprocess as sp
+
+    from a10flash import agent as agent_mod
+
+    class _GitFailing:
+        def run(self, cmd, **kw):
+            if cmd == ["git", "fetch", "origin"]:
+                raise sp.CalledProcessError(
+                    128, cmd,
+                    stderr=b"fatal: 'origin' nao parece ser um repositorio git")
+            raise AssertionError(f"inesperado: {cmd}")
+
+    monkeypatch.setattr(agent_mod.subprocess, "run", _GitFailing().run)
+    cli = _make_agent(EventBus(), _StubMonitor(busy=False))
+    res = cli._do_update()
+    assert res["status"] == "error"
+    assert "fatal: 'origin'" in res["message"], res["message"]
