@@ -20,9 +20,10 @@ class FakeA10:
                  serial="A10TH-TEST-0001", ask_reboot=False,
                  confirm_style="yn", loading_seconds=0,
                  drop_session_once=False, drop_to="login",
-                 start_at_password=False):
+                 start_at_password=False, uptime_s=7380):
         master, slave = pty.openpty()
         self._master = master
+        self._slave = slave   # guardado para simular desconexão (unplug)
         os.set_blocking(master, False)   # leitura não-bloqueante (polling)
         # raw mode no slave: sem echo, sem bufferização de linha.
         # Sem isso o pty ecoa o banner de volta pro master (o fake lê o
@@ -53,6 +54,8 @@ class FakeA10:
         self.start_logged_in = start_logged_in  # sessão órfã já ativa
         # login PELA METADE: usuário digitado, tela parada em 'Password:'
         self.start_at_password = start_at_password
+        # uptime reportado no show version (modo teste)
+        self.uptime_s = uptime_s
         self.commands = []
         self._ctx = "priv"          # priv | config | if
         if start_logged_in:
@@ -104,12 +107,21 @@ class FakeA10:
         self._pending = buf
         return None
 
+    def unplug(self):
+        """Simula desconectar a caixa: fecha o slave — o caminho da
+        porta (ttyname) some, como no hotplug real."""
+        try:
+            os.close(self._slave)
+        except OSError:
+            pass
+
     def close(self):
         self._stop = True
         try:
             os.close(self._master)
         except OSError:
             pass
+        self.unplug()
         self._thread.join(timeout=5)
 
     # ------------------------------------------------------- respostas
@@ -131,13 +143,21 @@ class FakeA10:
     def _is_no(line):
         return line.strip().lower() in ("n", "no")
 
+    def _uptime_line(self):
+        s = self.uptime_s
+        d, s = divmod(s, 86400)
+        h, s = divmod(s, 3600)
+        m = s // 60
+        return f"Up Time: {d}d {h}h {m}m (Active)\r\n"
+
     def _version_block(self):
         ver = self.versions[self.booted]
         return (f"\r\nACOS version {ver}\r\n"
                 f"Copyright 2004-2021 A10 Networks, Inc.\r\n"
                 f"Platform: {self.model}\r\n"
                 f"Serial Number: {self.serial}\r\n"
-                f"Current Time: TEST\r\n\r\n")
+                f"Current Time: TEST\r\n"
+                f"{self._uptime_line()}\r\n")
 
     def _license_block(self):
         return ("\r\nLicense Information\r\n"

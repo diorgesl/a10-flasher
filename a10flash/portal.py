@@ -39,7 +39,8 @@ COMMANDS = {"abort", "pause", "resume", "rerun"}
 # comandos de AGENTE (POST /api/agents/{id}/cmd) — não vão para workers
 AGENT_COMMANDS = {"update"}
 # tipos de mensagem aceitos dos agentes (WS /agent)
-AGENT_TYPES = {"status", "stage", "log", "cmd_ack", "device", "device_result"}
+AGENT_TYPES = {"status", "stage", "log", "cmd_ack", "device", "device_result",
+               "uptime_sample"}
 
 
 class PortalServer:
@@ -147,6 +148,13 @@ class PortalServer:
                 key, command, (body or {}).get("reason"))
             return JSONResponse({"ok": ok, "message": message})
 
+        @app.get("/api/devices/{serial}/uptime")
+        async def api_uptime(serial: str, request: Request):
+            """Histórico de amostras de uptime do modo teste."""
+            self._authorize(request)
+            return JSONResponse(
+                {"samples": self.store.list_uptime(serial)})
+
         @app.post("/api/agents/{agent_id}/cmd")
         async def api_agent_cmd(agent_id: str, request: Request):
             """Comando para o AGENTE (não para um dispositivo): update.
@@ -227,6 +235,12 @@ class PortalServer:
                         await websocket.send_json(
                             {"type": "welcome",
                              "agents": self._agents_summary()})
+                    elif msg.get("type") == "uptime_sample":
+                        # modo teste: amostra de uptime -> histórico no DB
+                        self.store.add_uptime_sample(
+                            msg.get("serial", ""), msg.get("uptime_s", 0),
+                            msg.get("ts"))
+                        continue
                     elif msg.get("type") in AGENT_TYPES:
                         if msg.get("type") == "device_result":
                             rec = self._save_device_record(agent_id, msg)

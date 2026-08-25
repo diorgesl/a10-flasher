@@ -151,10 +151,26 @@ def _run_simulated(cfg, notifier, power):
     fake.next_versions = {"primary": target}  # upgrade muda a versão
     axapi = FakeAxapiServer(sw_version=target, boot_from="HD_PRIMARY")
     try:
+        # modo teste é sempre ativo após sucesso: na DEMO simulada a
+        # "porta some" quando o modo inicia (o node do pty persiste no
+        # macOS enquanto o worker segura o fd — patch no exists)
+        def _on_event(dev, stage, detail):
+            if detail == "test_mode":
+                orig_exists = os.path.exists
+
+                def _exists(p):
+                    return False if p == fake.port else orig_exists(p)
+
+                os.path.exists = _exists
+
         worker = FlashWorker(
             cfg, "A10-SIMULADO", fake.port, notifier, power,
-            axapi_base_override=axapi.base_url())
-        result = worker.run()
+            axapi_base_override=axapi.base_url(), on_event=_on_event)
+        orig_exists = os.path.exists
+        try:
+            result = worker.run()
+        finally:
+            os.path.exists = orig_exists
         print(f"\nRESULTADO: {result}")
         return 0 if result.get("status") == "success" else 1
     finally:

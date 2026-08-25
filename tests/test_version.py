@@ -11,6 +11,7 @@ from a10flash.version import (  # noqa: E402
     parse_bootimage,
     parse_model,
     parse_serial_number,
+    parse_uptime,
     version_tuple,
 )
 
@@ -101,6 +102,15 @@ def test_mgmt_ip_formatos():
     assert m2 and m2.group(1) == "10.0.0.10"
     assert int(m2.group(2)) == 24
     assert _mask_to_prefix("255.255.0.0") == 16
+
+
+def test_parse_uptime():
+    """'Up Time: 0d 2h 3m (Active)' do show version -> segundos."""
+    assert parse_uptime("Up Time: 0d 2h 3m (Active)") == 2 * 3600 + 3 * 60
+    assert parse_uptime("Up Time: 1d 0h 5m") == 86400 + 300
+    assert parse_uptime("Up Time: 45m") == 2700
+    assert parse_uptime("Current Time: Aug 19 2026") is None
+    assert parse_uptime("") is None
 
 
 def test_parse_serial_number():

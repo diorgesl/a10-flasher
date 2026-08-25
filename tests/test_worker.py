@@ -13,6 +13,17 @@ from fake_axapi import FakeAxapiServer  # noqa: E402
 from fake_device import FakeA10  # noqa: E402
 
 
+def _fake_port_gone(fake):
+    """Faz a porta do fake 'sumir' para o worker (o node do pty persiste
+    no macOS enquanto o worker segura o fd — patch no os.path.exists)."""
+    orig_exists = os.path.exists
+
+    def _exists(p):
+        return False if p == fake.port else orig_exists(p)
+
+    os.path.exists = _exists
+
+
 def make_cfg(**over):
     cfg = {
         "serial": {"baudrate": 9600, "login_timeout": 5,
@@ -54,11 +65,31 @@ def run_worker(cfg, fake, axapi=None):
     events = []
     notifier = Notifier(log_file=None)
     power = PowerController(cfg.get("power", {}), notifier)
+
+    def _on_event(dev, stage, detail):
+        events.append(detail or stage)
+        if detail == "test_mode" and fake is not None:
+            # modo teste é SEMPRE ativo após sucesso: faz a "porta sumir"
+            # para o worker encerrar o modo (no macOS o node do pty
+            # persiste enquanto o worker segura o fd — fechar o slave do
+            # fake não basta; patchamos o exists para o caminho do fake)
+            orig_exists = os.path.exists
+
+            def _exists(p):
+                return False if p == fake.port else orig_exists(p)
+
+            os.path.exists = _exists
+
     worker = FlashWorker(
         cfg, "fake-a10", fake.port, notifier, power,
         axapi_base_override=axapi.base_url() if axapi else None,
-        on_event=lambda dev, stage, detail: events.append(detail or stage))
-    return worker.run(), events
+        on_event=_on_event)
+    orig_exists = os.path.exists
+    try:
+        result = worker.run()
+    finally:
+        os.path.exists = orig_exists
+    return result, events
 
 
 def test_upgrade_flow_completo():
@@ -1115,6 +1146,7 @@ def test_cache_antiloop_skips_caixa_processada():
     from a10flash.power import PowerController
 
     with tempfile.TemporaryDirectory() as tmp:
+        orig_exists = os.path.exists   # restaurado no finally (unplug fake)
         state_file = os.path.join(tmp, "processed_serials.json")
         fake = FakeA10(version="4.1.4", booted="primary", mgmt_ip="10.0.0.10",
                        reboot_delay=0.5, serial="A10TH-LOOP-001")
@@ -1126,7 +1158,10 @@ def test_cache_antiloop_skips_caixa_processada():
             bus = EventBus()
             # 1º ciclo: processa (reset) e marca o serial no cache
             w1 = FlashWorker(cfg, "fake-a10", fake.port, notifier, power,
-                             axapi_base_override=axapi.base_url(), bus=bus)
+                             axapi_base_override=axapi.base_url(), bus=bus,
+                             on_event=lambda d, s, det:
+                             _fake_port_gone(fake) if det == "test_mode"
+                             else None)
             r1 = w1.run()
             assert r1["status"] == "success", r1
             assert fake.commands.count("reboot") == 1  # o reset rodou
@@ -1146,10 +1181,68 @@ def test_cache_antiloop_skips_caixa_processada():
                             serial="A10TH-LOOP-001")
             w3 = FlashWorker(cfg, "fake-a10", fake3.port, notifier, power,
                              axapi_base_override=axapi.base_url(),
-                             force_cycle=True)
+                             force_cycle=True,
+                             on_event=lambda d, s, det:
+                             _fake_port_gone(fake3) if det == "test_mode"
+                             else None)
             r3 = w3.run()
             assert r3["status"] == "success", r3
             assert fake3.commands.count("reboot") == 1  # reset rodou
         finally:
+            os.path.exists = orig_exists   # desfaz o patch do unplug
             axapi.stop()
             fake.close()
+
+
+def test_modo_teste_coleta_uptime_e_encerra_na_desconexao(monkeypatch):
+    """Ciclo com sucesso -> modo teste: amostra IMEDIATA de uptime +
+    nova coleta a cada intervalo; o worker encerra quando a porta some
+    (caixa desconectada)."""
+    import threading
+    import a10flash.worker as wmod
+    from a10flash.bus import EventBus
+
+    fake = FakeA10(version="4.1.4", booted="primary", reboot_delay=0.5,
+                   uptime_s=7380)
+    axapi = FakeAxapiServer(sw_version="4.1.4")
+    try:
+        cfg = make_cfg(device={"test_interval_h": 0.001})  # ~3.6s
+        notifier = Notifier(log_file=None)
+        power = PowerController(cfg.get("power", {}), notifier)
+        bus = EventBus()
+        worker = FlashWorker(cfg, "fake-a10", fake.port, notifier, power,
+                             axapi_base_override=axapi.base_url(), bus=bus)
+
+        samples = []
+        disconnected = {"now": False}
+        sid, q = bus.subscribe()
+
+        def collect_until_2():
+            while True:
+                ev = q.get(timeout=60)
+                if ev.get("type") == "uptime_sample":
+                    samples.append(ev)
+                    if len(samples) >= 2:
+                        disconnected["now"] = True   # simula desconexão
+                        return
+
+        orig_exists = os.path.exists
+        monkeypatch.setattr(
+            os.path, "exists",
+            lambda p: orig_exists(p)
+            if p != fake.port or not disconnected["now"] else False)
+        t = threading.Thread(target=collect_until_2, daemon=True)
+        t.start()
+
+        result = worker.run()
+        t.join(timeout=5)
+
+        assert result["status"] == "success", result
+        assert result.get("test_mode") is True
+        assert result.get("uptime_samples", 0) >= 2
+        assert len(samples) >= 2
+        assert samples[0]["uptime_s"] == 7380
+        assert samples[0]["serial"] == "A10TH-TEST-0001"
+    finally:
+        axapi.stop()
+        fake.close()

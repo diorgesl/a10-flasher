@@ -60,6 +60,11 @@ device:
     ip: ""
     prefix: 24
     gateway: ""
+  # MODO TESTE: após um ciclo com sucesso a caixa FICA conectada na
+  # serial e o worker coleta o uptime (show version) a cada N horas até
+  # a caixa ser desconectada (ou abort do portal). Amostras -> portal ->
+  # SQLite (uptime_samples) -> histórico no dashboard.
+  test_interval_h: 6
 
 upgrade:
   boot_wait: 600

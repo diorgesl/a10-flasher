@@ -438,3 +438,29 @@ def test_endpoint_agents_cmd_update_chega_no_agente():
                     headers={"X-Token": "segredo"},
                     json={"command": "update"})
     assert r.status_code == 404
+
+
+def test_uptime_sample_ws_salva_e_endpoint_lista():
+    """Agente envia uptime_sample pelo WS /agent -> portal salva no DB;
+    GET /api/devices/{serial}/uptime devolve o histórico (novo primeiro)."""
+    portal = make_portal()
+    client = TestClient(portal.app)
+    with client.websocket_connect("/agent?token=segredo&agent=lab-1") as ws:
+        ws.send_json({"type": "hello", "agent": "lab-1"})
+        assert ws.receive_json()["type"] == "welcome"
+        ws.send_json({"type": "uptime_sample", "device": "ttyUSB0",
+                      "serial": "A10TH-UP-001", "ts": 123.0,
+                      "uptime_s": 7380})
+        ws.send_json({"type": "uptime_sample", "device": "ttyUSB0",
+                      "serial": "A10TH-UP-001", "ts": 999.0,
+                      "uptime_s": 9000})
+        time.sleep(0.3)
+
+    r = client.get("/api/devices/A10TH-UP-001/uptime",
+                   headers={"X-Token": "segredo"})
+    assert r.status_code == 200
+    samples = r.json()["samples"]
+    assert len(samples) == 2
+    assert samples[0]["uptime_s"] == 9000   # mais recente primeiro
+    # sem token -> 401
+    assert client.get("/api/devices/A10TH-UP-001/uptime").status_code == 401

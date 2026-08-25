@@ -84,3 +84,18 @@ def test_delete():
     assert store.get("A10TH-DEL") is None
     assert store.delete("A10TH-DEL") is False   # já não existe
     assert store.count() == 0
+
+
+def test_uptime_samples():
+    """Amostras de uptime do modo teste: uma linha por coleta, mais
+    recentes primeiro."""
+    store = make_store()
+    assert store.list_uptime("A10TH-X") == []
+    store.add_uptime_sample("A10TH-X", 7380, ts=100.0)
+    store.add_uptime_sample("A10TH-X", 9000, ts=200.0)
+    rows = store.list_uptime("A10TH-X")
+    assert len(rows) == 2
+    assert rows[0]["uptime_s"] == 9000   # mais recente primeiro
+    assert rows[1]["uptime_s"] == 7380
+    assert rows[0]["ts"] == 200.0
+    assert store.list_uptime("OUTRA") == []

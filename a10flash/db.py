@@ -36,6 +36,17 @@ CREATE TABLE IF NOT EXISTS devices (
 );
 """
 
+# Amostras de uptime do modo teste (uma linha por coleta a cada 6h)
+_UPTIME_SCHEMA = """
+CREATE TABLE IF NOT EXISTS uptime_samples (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    serial   TEXT NOT NULL,
+    ts       REAL NOT NULL,
+    uptime_s INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_uptime_serial ON uptime_samples (serial, ts);
+"""
+
 
 class DeviceStore:
     def __init__(self, path="a10flash.db"):
@@ -55,6 +66,8 @@ class DeviceStore:
                     "ALTER TABLE devices ADD COLUMN interfaces TEXT")
             except sqlite3.OperationalError:
                 pass  # coluna já existe
+            # executescript: o schema tem CREATE TABLE + CREATE INDEX
+            self._conn.executescript(_UPTIME_SCHEMA)
             self._conn.commit()
 
     def close(self):
@@ -132,6 +145,29 @@ class DeviceStore:
             d["upgraded"] = bool(d["upgraded"])
             out.append(d)
         return out
+
+    def add_uptime_sample(self, serial, uptime_s, ts=None):
+        """Registra uma amostra de uptime do modo teste."""
+        key = (serial or "").strip()
+        if not key:
+            return None
+        ts = ts if ts is not None else time.time()
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO uptime_samples (serial, ts, uptime_s) "
+                "VALUES (?, ?, ?)", (key, ts, int(uptime_s)))
+            self._conn.commit()
+        return ts
+
+    def list_uptime(self, serial, limit=200):
+        """Histórico de uptime de um equipamento (mais recente primeiro)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT ts, uptime_s FROM uptime_samples "
+                "WHERE serial = ? ORDER BY ts DESC LIMIT ?",
+                ((serial or "").strip(), limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     def count(self):
         with self._lock:

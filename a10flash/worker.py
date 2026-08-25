@@ -18,7 +18,12 @@ from .a10_axapi import A10Axapi, AxapiError
 from .a10_cli import A10Error, SerialA10
 from .serial_console import ConsoleError
 from .state import ProcessedSerials
-from .version import compare_versions, version_major, version_tuple
+from .version import (
+    compare_versions,
+    parse_uptime,
+    version_major,
+    version_tuple,
+)
 
 SLOT_MAP = {"primary": "pri", "secondary": "sec"}
 
@@ -391,13 +396,8 @@ class FlashWorker:
                     f"Factory reset aplicado — ACOS {version} no padrão "
                     "de fábrica",
                 )
-                # console limpo ANTES de salvar o registro: desloga com
-                # exit — o próximo ciclo/usuário não encontra sessão
-                # órfã no console (getty só mostra 'login:' livre)
-                self.notifier.info(
-                    self.device,
-                    "Encerrando sessão (exit) — console limpo")
-                cli.logout(timeout=15)
+                # (sem logout aqui: o modo teste mantém a sessão aberta;
+                # o finally desloga/quebra ao final do modo)
 
             # o retrato (serial + shows) foi coletado ANTES das ações,
             # com a caixa estável — pós-reset só confirma a versão e salva.
@@ -410,7 +410,7 @@ class FlashWorker:
                 f"modelo={device_info.get('model') or 'N/D'} ACOS {version}",
             )
 
-            return {
+            result = {
                 "status": "success",
                 "version": version,
                 "upgraded": upgraded,
@@ -420,6 +420,12 @@ class FlashWorker:
                     f"| factory reset: {'sim' if res_cfg.get('enabled', True) else 'não'}"
                 ),
             }
+            # MODO TESTE: a caixa atualizada fica conectada na serial
+            # coletando uptime até ser desconectada (ou abort do portal)
+            samples = self._test_mode(cli, device_info.get("serial"))
+            result["test_mode"] = True
+            result["uptime_samples"] = samples
+            return result
         finally:
             try:
                 cli.logout()   # não deixa sessão órfã no console
@@ -1052,3 +1058,71 @@ class FlashWorker:
         else:
             cli.erase_config()
             cli.reboot()
+
+    # --------------------------------------------------------- modo teste
+    def _test_mode(self, cli, serial):
+        """Modo teste pós-ciclo: mantém a sessão serial aberta e coleta o
+        uptime (`show version`) a cada `test_interval_h` horas até a
+        caixa ser desconectada (porta sumir) ou um abort do portal.
+
+        Retorna o número de amostras coletadas.
+        """
+        interval = (float(self.cfg.get("device", {})
+                          .get("test_interval_h", 6)) * 3600)
+        samples = 0
+        next_at = 0.0   # primeira coleta é imediata
+        self._state = "test_mode"
+        self._event("stage", "test_mode")
+        self._publish_status()
+        self.notifier.info(
+            self.device,
+            f"Modo teste: coletando uptime a cada {interval / 3600:.4g}h "
+            "até a caixa ser desconectada...")
+        while True:
+            self._check_commands()   # abort do portal encerra (FlashAbort)
+            if not os.path.exists(self.port_path):
+                self.notifier.info(
+                    self.device,
+                    "Caixa desconectada — encerrando o modo teste.")
+                break
+            now = time.time()
+            if now >= next_at:
+                if self._collect_uptime(cli, serial):
+                    samples += 1
+                    self._publish_status(result={
+                        "summary": f"modo teste: {samples} amostra(s) "
+                                   "de uptime coletada(s)"})
+                next_at = now + interval
+            time.sleep(1)
+        return samples
+
+    def _collect_uptime(self, cli, serial):
+        """`show version` -> uptime -> publica `uptime_sample` no bus.
+        Reloga se a sessão caiu. Retorna True se coletou."""
+        for _ in (1, 2):
+            try:
+                out = cli.cmd("show version", timeout=30)
+            except (ConsoleError, A10Error):
+                try:
+                    cli.open_and_login()
+                except (ConsoleError, A10Error):
+                    time.sleep(5)
+                    continue
+                continue  # relogou — tenta de novo
+            uptime = parse_uptime(out)
+            if uptime is not None:
+                if self.bus:
+                    self.bus.publish({
+                        "type": "uptime_sample",
+                        "device": self.device,
+                        "port": self.port_path,
+                        "serial": serial or "",
+                        "ts": time.time(),
+                        "uptime_s": uptime,
+                    })
+                self.notifier.info(
+                    self.device,
+                    f"uptime: {uptime // 3600}h {(uptime % 3600) // 60}m "
+                    f"({uptime}s)")
+                return True
+        return False

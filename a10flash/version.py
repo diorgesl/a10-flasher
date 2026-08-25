@@ -105,6 +105,24 @@ def parse_acos_version(text):
     return None
 
 
+def parse_uptime(text):
+    """'Up Time: 0d 2h 3m (Active)' do show version -> segundos.
+
+    Formato do ACOS: dias/horas/minutos (com ou sem dias). None se
+    não encontrar a linha.
+    """
+    if not text:
+        return None
+    m = re.search(r"(?i)up\s*time\s*:\s*([0-9dhms ]+)", text)
+    if not m:
+        return None
+    total = 0
+    units = {"d": 86400, "h": 3600, "m": 60, "s": 1}
+    for n, unit in re.findall(r"(\d+)\s*([dhms])", m.group(1)):
+        total += int(n) * units[unit]
+    return total
+
+
 def parse_serial_number(text):
     """Extrai o número de série de um `show version`. Retorna str ou None."""
     if not text:

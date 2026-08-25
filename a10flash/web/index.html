@@ -387,7 +387,18 @@
         <h4>show version</h4><pre>${esc(d.version_output || "—")}</pre>
         <h4>show license-info</h4><pre>${esc(d.license_info || "—")}</pre>
         <h4>show environment</h4><pre>${esc(d.environment || "—")}</pre>
-<h4>show interfaces</h4><pre>${esc(d.interfaces || "—")}</pre>`;
+<h4>show interfaces</h4><pre>${esc(d.interfaces || "—")}</pre>
+<h4>uptime (modo teste)</h4><div id="uptimeHist" class="muted">carregando…</div>`;
+      api("/api/devices/" + encodeURIComponent(serial) + "/uptime").then(u => {
+        const rows = (u.samples || []);
+        const fmt = s => Math.floor(s / 86400) + "d " +
+          Math.floor((s % 86400) / 3600) + "h " +
+          Math.floor((s % 3600) / 60) + "m";
+        if (!rows.length) { $("uptimeHist").textContent = "sem amostras"; return; }
+        $("uptimeHist").innerHTML = rows.slice(0, 20).map(r =>
+          `<div>${stamp(r.ts)} — uptime ${fmt(r.uptime_s)}</div>`).join("") +
+          (rows.length > 20 ? `<div class="muted">… +${rows.length - 20} mais antigas</div>` : "");
+      }).catch(() => { $("uptimeHist").textContent = "—"; });
       $("delDevice").onclick = () => {
         if (!confirm("Apagar o registro " + serial + "?")) return;
         api("/api/devices/" + encodeURIComponent(serial), { method: "DELETE" })
