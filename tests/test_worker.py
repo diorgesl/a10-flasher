@@ -161,6 +161,26 @@ def test_boot_na_particao_mais_nova_antes_do_upgrade():
         fake.close()
 
 
+def test_upgrade_cli_2x_comando_longo_mostra_dica_de_80_cols():
+    """As duas partições 2.x + URL sftp longa: o ACOS corta o comando em
+    80 colunas — o erro deve indicar a causa real (encurtar o caminho no
+    servidor sftp) em vez de só 'comando não aceito'."""
+    fake = FakeA10(version="2.7.2-P12-SP3", secondary="2.5.0-P1",
+                   booted="primary", reboot_delay=0.5)
+    fake.next_versions = {"primary": "4.1.4"}
+    axapi = FakeAxapiServer(sw_version="4.1.4")
+    try:
+        cfg = make_cfg(device={"firmware_url":
+            "sftp://ispanel:485716_As@138.97.60.34/home/ispanel/"
+            "ACOS_FTA_4_1_4-GR1-P14_42.64.upg"})
+        result, _ = run_worker(cfg, fake, axapi)
+        assert result["status"] != "success", result
+        assert "encurte" in (result.get("error") or ""), result
+    finally:
+        axapi.stop()
+        fake.close()
+
+
 def test_upgrade_metodo_cli():
     """upgrade_method: cli -> comando serial `upgrade hd ... use-mgmt-port`
     (sem precisar SABER o IP da gerência — mas garante DHCP se a caixa

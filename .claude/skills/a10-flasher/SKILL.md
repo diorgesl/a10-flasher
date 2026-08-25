@@ -83,6 +83,14 @@ acompanhamento e registro dos equipamentos.
   `upgrade hd ... sftp://`), independente do config. Repro de bancada:
   caixa 2.7.2 com method axapi → connection refused → ciclo morria
   pedindo para religar o equipamento.
+- **ACOS 2.x: bootimage só na forma CURTA** (`bootimage hd pri`/`sec`) —
+  a longa (`primary`/`secondary`) é rejeitada em silêncio e o reboot
+  volta na partição antiga. `boot_to`/`set_bootimage` tentam as curtas
+  primeiro e VALIDAM o eco + `show bootimage` (o `cmd()` engole erros).
+- **ACOS 2.x corta linhas > 80 col** — o `upgrade hd` com URL sftp longa
+  era truncado no meio da URL e rejeitado com `^`. Se as duas partições
+  forem 2.x, o caminho/arquivo no servidor sftp PRECISA ser curto
+  (symlink); o erro agora avisa com a dica.
 - **IP de gerência legado `172.31.31.31`** (estático da bancada antiga,
   sem rota pro servidor sftp): `_ensure_mgmt_ip` troca para DHCP
   (`conf`/`interface management`/`ip address dhcp`) e espera o IP novo —

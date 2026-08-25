@@ -595,33 +595,69 @@ class SerialA10:
             con.sendline(confirm_answer(buf, "y"))
         low = buf.lower()
         if "unknown command" in low or "invalid" in low:
+            hint = ""
+            if len(cmd) > 80:
+                # repro de bancada: ACOS 2.x corta linhas longas — o
+                # comando era truncado no meio da URL e rejeitado com '^'
+                hint = (f" — o comando tem {len(cmd)} chars e o ACOS "
+                        "corta linhas longas (~80 col); encurte o "
+                        "caminho/arquivo no servidor sftp (ex.: symlink "
+                        "curto)")
             raise A10Error(
-                f"comando de upgrade não aceito pelo ACOS: {buf[-300:]!r}"
+                f"comando de upgrade não aceito pelo ACOS: "
+                f"{buf[-300:]!r}{hint}"
             )
         return "ok"
 
     def boot_to(self, slot, timeout=30):
         """Muda a partição de boot (configure -> bootimage hd <pri|sec>
-        -> write mem) — o worker chama reboot em seguida para a caixa
-        subir na partição escolhida."""
-        names = {"pri": "primary", "sec": "secondary"}
-        name = names.get(slot, slot)
-        self.cmd("configure terminal", timeout=timeout)
-        self.cmd(f"bootimage hd {name}", timeout=timeout)
+        -> write mem) e CONFIRMA no `show bootimage` que o default mudou.
+
+        O ACOS 2.x só aceita a forma CURTA (`pri`/`sec`) — repro de
+        bancada: `bootimage hd primary` era rejeitado em silêncio (o
+        cmd() engole o 'Unrecognized') e o reboot voltava na partição
+        antiga. Tenta a curta, depois as longas, validando o eco.
+        """
+        short = {"primary": "pri", "secondary": "sec"}.get(slot, slot)
+        con = self._console()
+        con.drain(0.1)
+        con.sendline("configure terminal")
+        con.expect([PROMPT_RE], timeout=timeout)
+        accepted = False
+        for form in (f"bootimage hd {short}", f"bootimage hd {slot}",
+                     f"bootimage {slot}"):
+            con.sendline(form)
+            _, buf = con.expect([PROMPT_RE], timeout=timeout)
+            if "unknown command" not in buf.lower() \
+                    and "invalid" not in buf.lower():
+                accepted = True
+                break
         self.write_memory(timeout=timeout)
-        self.cmd("end", timeout=timeout)
+        con.sendline("end")
+        con.expect([PROMPT_RE], timeout=timeout)
+        info = self.get_bootimage(timeout=timeout)
+        if not accepted or info.get("default") != slot:
+            raise A10Error(
+                f"não consegui mudar o boot para {slot} — o ACOS não "
+                f"aceitou os comandos bootimage ou o default não mudou "
+                f"(bootimage atual: {info})")
+        return info
 
     def set_bootimage(self, slot, timeout=15):
         """Marca o slot (primary|secondary) para o próximo boot.
 
-        Tenta os formatos aceitos pelo ACOS (`bootimage primary`,
-        `bootimage hd primary`) até um que não retorne erro.
+        Tenta as formas aceitas pelo ACOS até uma não retornar erro —
+        CURTAS primeiro (`bootimage pri`/`bootimage hd pri`): o 2.x só
+        aceita `pri`/`sec`, e o SO continua 2.x até o reboot seguinte
+        (repro de bancada: forma longa rejeitada em silêncio).
         """
         con = self._console()
         names = {"pri": "primary", "sec": "secondary"}
         name = names.get(slot, slot)
+        short = {"primary": "pri", "secondary": "sec"}.get(name, name)
         last = None
-        for cmd in (f"bootimage {name}", f"bootimage hd {name}",
+        for cmd in (f"bootimage {short}", f"bootimage hd {short}",
+                    f"bootimage {name}", f"bootimage hd {name}",
                     f"bootimage disk {name}"):
             try:
                 con.drain(0.1)

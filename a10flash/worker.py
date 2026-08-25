@@ -801,7 +801,10 @@ class FlashWorker:
                 self.device,
                 f"Partição {other_slot} mais atual ({other_ver} > "
                 f"{booted_ver}) — mudando o boot e reiniciando...")
-            cli.boot_to(other_slot)
+            try:
+                cli.boot_to(other_slot)
+            except A10Error as exc:
+                raise FlashError(str(exc)) from exc
             cli.reboot()
             return True
         return False

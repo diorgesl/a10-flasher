@@ -353,12 +353,17 @@ class FakeA10:
             # (progresso no console). A versão nova vai para o slot que
             # RECEBEU o upgrade (não-bootado). Com `ask_reboot`, o ACOS
             # pergunta se quer reiniciar após instalar (como no real).
+            # ACOS 2.x: corta linhas > 80 col (visto em bancada — o
+            # comando era truncado no meio da URL e rejeitado com ^).
+            if self.versions[self.booted].startswith("2.") and len(line) > 80:
+                self._send("\r\nUnknown command\r\n" + self._prompt())
+                return
             parts = line.split()
             slot = parts[2] if len(parts) > 2 else "pri"
             full = {"pri": "primary", "sec": "secondary"}.get(slot, slot)
-            if self.next_versions:
-                self.versions[full] = list(self.next_versions.values())[0]
-                self.next_versions = {}  # já aplicado ao slot do upgrade
+            # versão nova só "roda" após o REBOOT (como no real) — o
+            # _do_reboot aplica o next_versions; o SO continua o antigo
+            # até lá (importa para o 2.x, que rejeita comandos novos)
             self._send("\r\nDownloading... 100%\r\n")
             self._send("Installing image...\r\n")
             if self.ask_reboot:
@@ -371,9 +376,20 @@ class FakeA10:
             # marca o slot para o próximo boot (bootimage primary / hd primary)
             parts = line.split()
             slot = parts[-1] if parts else ""
-            if slot in ("primary", "secondary"):
+            short = {"pri": "primary", "sec": "secondary"}
+            if slot in short:
+                # forma curta (pri/sec) — a única que o ACOS 2.x aceita
+                self.booted = short[slot]
+                self._send("\r\n" + self._prompt())
+            elif slot in ("primary", "secondary") \
+                    and self.versions[self.booted].startswith("2."):
+                # repro de bancada: 2.x rejeita a forma longa
+                self._send("\r\nUnknown command\r\n" + self._prompt())
+            elif slot in ("primary", "secondary"):
                 self.booted = slot
-            self._send("\r\n" + self._prompt())
+                self._send("\r\n" + self._prompt())
+            else:
+                self._send("\r\nUnknown command\r\n" + self._prompt())
         elif line == "erase":
             self._send("Do you want to erase the startup-config? "
                        f"[{self._conf()}] ")
