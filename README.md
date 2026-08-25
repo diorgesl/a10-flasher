@@ -215,6 +215,24 @@ portal_agent:
 > Telegram/logs configurados no portal, monte o config.yaml (linha comentada
 > no compose).
 
+**Persistência do DB:** os equipamentos registrados ficam no volume
+nomeado **`a10flash-db`** (nome fixo, sem prefixo de projeto) montado em
+`/data` (`PORTAL_DB=/data/a10flash.db`). Rebuilds, `down` e recriação do
+container **não** apagam os registros. Atenção: `docker compose down -v`
+apaga os volumes — use `down` sem `-v`.
+
+> **Migração de deploys antigos** (antes do nome fixo): se o volume atual
+> tem prefixo (ex.: `a10-flasher_a10flash-db` ou `docker_a10flash-db`),
+> copie os dados uma vez, antes do próximo `up`:
+>
+> ```bash
+> docker volume ls | grep a10flash   # acha o volume atual
+> docker run --rm \
+>   -v a10flash-db:/novo \
+>   -v <VOLUME_ATUAL>:/antigo \
+>   alpine sh -c "cp -a /antigo/. /novo/"
+> ```
+
 ### API do portal (para integrar em outros sistemas)
 
 ```
@@ -222,6 +240,7 @@ GET  /api/status                -> agentes + dispositivos + estados
 GET  /api/events?limit=100      -> últimos eventos (log em tempo real)
 GET  /api/devices               -> equipamentos registrados (resumo)
 GET  /api/devices/{serial}      -> registro completo (shows salvos)
+GET  /api/devices/{serial}/report -> relatório PDF gerado por LLM (DeepSeek)
 DELETE /api/devices/{serial}   -> apaga o registro (limpeza manual)
 POST /api/devices               -> salva/atualiza um registro (upsert por serial)
 POST /api/devices/{key}/cmd     -> {"command": "abort|pause|resume|rerun"}
@@ -240,6 +259,12 @@ volume `a10flash-db` → `/data/a10flash.db`) e marca o equipamento como
 **atualizado**. O dashboard lista os registros (tabela "Equipamentos
 registrados") e o clique em um serial expande os shows salvos. O upsert é por
 serial — a mesma caixa re-flashada atualiza o registro existente.
+
+Cada linha da tabela tem o botão **PDF**: o portal manda os dados do
+equipamento para um LLM (DeepSeek V4 Flash, via seção `llm` do config —
+`api_key` pode vir da env `DEEPSEEK_API_KEY`) que devolve uma análise
+estruturada (firmware, licenças, saúde do hardware, recomendações) e gera
+o relatório em PDF para download.
 
 ## Testes
 

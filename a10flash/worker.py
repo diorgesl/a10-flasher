@@ -272,6 +272,7 @@ class FlashWorker:
             "version_output": info.get("version_output", ""),
             "license_info": info.get("license_info", ""),
             "environment": info.get("environment", ""),
+            "interfaces": info.get("interfaces", ""),
         })
 
     # ------------------------------------------------------------ ciclo
@@ -302,6 +303,21 @@ class FlashWorker:
                 f"Equipamento encontrado: ACOS {version} — "
                 f"slots {bootimage}",
             )
+
+            # partição NÃO bootada mais nova que a atual? Muda o boot
+            # pra ela e reinicia (ex.: secondary 2.x bootada com primary
+            # já em 4.x — o 4.x permite AXAPI e evita o CLI no 2.x, que
+            # corta comando longo no meio da URL)
+            if self._boot_newest_slot(cli, bootimage):
+                cli = self._wait_and_login()
+                self._wait_ready(cli)
+                version = cli.get_version()
+                self._version = version
+                bootimage = cli.get_bootimage()
+                self.notifier.info(
+                    self.device,
+                    f"Equipamento na partição mais atual: ACOS {version} "
+                    f"— slots {bootimage}")
 
             # retrato do equipamento coletado AGORA (caixa estável):
             # serial + shows. Licença/serial/hardware NÃO mudam com o
@@ -761,6 +777,35 @@ class FlashWorker:
             raise FlashError(f"upgrade via CLI falhou: {exc}") from exc
 
     # ------------------------------------------------------ decisão
+    def _boot_newest_slot(self, cli, bootimage):
+        """Se a partição NÃO bootada está numa versão MAIS NOVA que a
+        bootada, muda o boot para ela (configure -> bootimage hd ->
+        write mem) — o `_cycle` chama reboot em seguida.
+
+        Repro de bancada: caixa bootando 2.x com a primary já em 4.x —
+        subir na 4.x permite AXAPI e evita o CLI no 2.x (que cortava o
+        comando de upgrade no meio da URL).
+        Retorna True se mudou o boot (o caller reinicia e re-loga).
+        """
+        primary = bootimage.get("primary")
+        secondary = bootimage.get("secondary")
+        default = bootimage.get("default")
+        if not primary or not secondary:
+            return False
+        booted_ver = secondary if default == "secondary" else primary
+        other_ver = primary if default == "secondary" else secondary
+        other_slot = "primary" if default == "secondary" else "secondary"
+        cmpv = compare_versions(other_ver, booted_ver)
+        if cmpv is not None and cmpv > 0:
+            self.notifier.info(
+                self.device,
+                f"Partição {other_slot} mais atual ({other_ver} > "
+                f"{booted_ver}) — mudando o boot e reiniciando...")
+            cli.boot_to(other_slot)
+            cli.reboot()
+            return True
+        return False
+
     def _decide_upgrade(self, cli, current_version):
         """Decide SE atualizar e PARA QUAL versão (política configurável).
 
@@ -926,6 +971,7 @@ class FlashWorker:
             "version_output": "",
             "license_info": "",
             "environment": "",
+            "interfaces": "",
         }
 
         def _try(label, fn, key):
@@ -945,6 +991,9 @@ class FlashWorker:
              "version_output")
         _try("license-info", cli.get_license_info, "license_info")
         _try("environment", cli.get_environment, "environment")
+        _try("show interfaces",
+             lambda timeout: cli.cmd("show interfaces", timeout=timeout),
+             "interfaces")
         return info
 
     def _factory_reset(self, cli):

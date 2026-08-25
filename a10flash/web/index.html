@@ -312,7 +312,7 @@
     }
     $("devices").innerHTML = `<table class="devices-table"><tr>
         <th>Serial</th><th>Modelo</th><th>Versão</th><th>Atualizado</th>
-        <th>Agente</th><th>Registrado</th></tr>` +
+        <th>Agente</th><th>Registrado</th><th>Relatório</th></tr>` +
       devices.map(d => `<tr class="dev-row" data-serial="${esc(d.serial)}">
         <td>${esc(d.serial)}</td>
         <td>${esc(d.model || "—")}</td>
@@ -320,11 +320,48 @@
         <td class="${d.upgraded ? "upd-yes" : "upd-no"}">${d.upgraded ? "✓ sim" : "não"}</td>
         <td>${esc(d.agent || "—")}</td>
         <td>${fmtDate(d.updated_at)}</td>
+        <td><button class="btn-report" data-serial="${esc(d.serial)}">PDF</button></td>
       </tr>`).join("") + `</table>`;
     document.querySelectorAll(".dev-row").forEach(tr => {
       tr.onclick = () => toggleDetail(tr.dataset.serial);
     });
+    document.querySelectorAll(".btn-report").forEach(b => {
+      b.onclick = (ev) => { ev.stopPropagation(); downloadReport(b.dataset.serial, b); };
+    });
     if (openDetail) showDetail(openDetail);
+  }
+
+  async function downloadReport(serial, btn) {
+    // baixa o PDF gerado pelo LLM (fetch -> blob, para mandar o token no header)
+    btn.disabled = true;
+    const original = btn.textContent;
+    btn.textContent = "gerando…";
+    try {
+      const opts = { headers: {} };
+      if (token) opts.headers["X-Token"] = token;
+      const r = await fetch("/api/devices/" + encodeURIComponent(serial) + "/report", opts);
+      if (r.status === 401) throw new Error("token inválido");
+      if (!r.ok) {
+        const body = await r.json().catch(() => ({}));
+        throw new Error(body.detail || r.statusText);
+      }
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      const cd = r.headers.get("Content-Disposition") || "";
+      const m = cd.match(/filename="?([^";]+)"?/);
+      a.download = m ? m[1] : ("relatorio-" + serial + ".pdf");
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e) {
+      log({ type: "log", level: "error", message: "relatório: " + e.message });
+    } finally {
+      btn.disabled = false;
+      btn.textContent = original;
+    }
   }
 
   function toggleDetail(serial) {
@@ -349,7 +386,8 @@
         </div>
         <h4>show version</h4><pre>${esc(d.version_output || "—")}</pre>
         <h4>show license-info</h4><pre>${esc(d.license_info || "—")}</pre>
-        <h4>show environment</h4><pre>${esc(d.environment || "—")}</pre>`;
+        <h4>show environment</h4><pre>${esc(d.environment || "—")}</pre>
+<h4>show interfaces</h4><pre>${esc(d.interfaces || "—")}</pre>`;
       $("delDevice").onclick = () => {
         if (!confirm("Apagar o registro " + serial + "?")) return;
         api("/api/devices/" + encodeURIComponent(serial), { method: "DELETE" })

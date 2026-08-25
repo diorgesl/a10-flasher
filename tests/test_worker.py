@@ -116,13 +116,13 @@ def test_versao_ja_atual():
 
 
 def test_upgrade_acos_2x_forca_metodo_cli():
-    """ACOS 2.x NÃO tem AXAPI (HTTPS na gerência recusa conexão) — o
-    upgrade é via CLI serial (`upgrade hd ... sftp://`) MESMO com
-    upgrade_method: axapi no config. Reproduz o bug real de bancada:
-    caixa 2.7.2 -> AXAPI connection refused -> ciclo morria pedindo
-    para religar o equipamento."""
-    fake = FakeA10(version="2.7.2-P12-SP3", booted="primary",
-                   mgmt_ip="172.31.31.211", reboot_delay=0.5)
+    """AS DUAS partições em ACOS 2.x: upgrade via CLI serial
+    (`upgrade hd ... sftp://`) MESMO com upgrade_method: axapi no config.
+    Reproduz o bug real de bancada: caixa 2.7.2 -> AXAPI connection
+    refused -> ciclo morria pedindo para religar o equipamento."""
+    fake = FakeA10(version="2.7.2-P12-SP3", secondary="2.5.0-P1",
+                   booted="primary", mgmt_ip="172.31.31.211",
+                   reboot_delay=0.5)
     fake.next_versions = {"primary": "4.1.4"}
     axapi = FakeAxapiServer(sw_version="4.1.4")
     try:
@@ -132,6 +132,30 @@ def test_upgrade_acos_2x_forca_metodo_cli():
         # upgrade via SERIAL (comando `upgrade hd`), NUNCA via AXAPI
         assert _upgrade_cmd(fake), fake.commands
         assert not [c for c in axapi.calls if c[1].endswith("/upgrade/hd")]
+    finally:
+        axapi.stop()
+        fake.close()
+
+
+def test_boot_na_particao_mais_nova_antes_do_upgrade():
+    """Caixa bootando 2.x com a OUTRA partição já em 4.x (caso real de
+    bancada: primary 4.1.4, secondary 2.7.2 bootada): o worker muda o
+    boot para a partição mais nova, reinicia e segue de lá — sem CLI no
+    2.x (que cortava o comando longo no meio da URL)."""
+    fake = FakeA10(version="4.1.4", secondary="2.7.2-P12-SP3",
+                   booted="secondary", reboot_delay=0.5)
+    axapi = FakeAxapiServer(sw_version="4.1.4")
+    try:
+        result, _ = run_worker(make_cfg(), fake, axapi)
+        assert result["status"] == "success", result
+        assert result["version"] == "4.1.4"
+        # trocou o boot para a partição 4.x e reiniciou
+        assert any(c.startswith("bootimage") for c in fake.commands)
+        assert "reboot" in fake.commands
+        # sem upgrade via serial (CLI 2.x) e sem upgrade AXAPI (já no alvo)
+        assert not [c for c in fake.commands if c.startswith("upgrade hd")]
+        assert not [c for c in axapi.calls if c[1].endswith("/upgrade/hd")]
+        assert "erase" in fake.commands  # ciclo completo até o reset
     finally:
         axapi.stop()
         fake.close()
@@ -400,6 +424,7 @@ def test_ciclo_completo_com_loading_pos_reset():
         # a coleta rodou DEPOIS do loading -> dados completos
         assert result["device_info"]["serial"] == "A10TH-TEST-0001"
         assert "License" in result["device_info"]["license_info"]
+        assert "IP Address" in result["device_info"]["interfaces"]
     finally:
         axapi.stop()
         fake.close()

@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS devices (
     license_info   TEXT,
     environment    TEXT,
     version_output TEXT,
+    interfaces     TEXT,
     created_at     REAL,
     updated_at     REAL
 );
@@ -48,6 +49,12 @@ class DeviceStore:
         self._conn.row_factory = sqlite3.Row
         with self._lock:
             self._conn.execute(_SCHEMA)
+            try:
+                # migração de DBs antigos (sem a coluna interfaces)
+                self._conn.execute(
+                    "ALTER TABLE devices ADD COLUMN interfaces TEXT")
+            except sqlite3.OperationalError:
+                pass  # coluna já existe
             self._conn.commit()
 
     def close(self):
@@ -56,7 +63,8 @@ class DeviceStore:
     # ----------------------------------------------------------- escrita
     def upsert(self, serial, device_key=None, port=None, model=None,
                version=None, upgraded=False, status="success", agent=None,
-               license_info="", environment="", version_output=""):
+               license_info="", environment="", version_output="",
+               interfaces=""):
         """Cria ou atualiza o registro do equipamento (chave: serial).
 
         Retorna o registro como dict. Se o serial vier vazio (falha de
@@ -73,9 +81,9 @@ class DeviceStore:
                 """
                 INSERT INTO devices (serial, device_key, port, model, version,
                                      upgraded, status, agent, license_info,
-                                     environment, version_output,
+                                     environment, version_output, interfaces,
                                      created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(serial) DO UPDATE SET
                     device_key     = excluded.device_key,
                     port           = excluded.port,
@@ -87,11 +95,12 @@ class DeviceStore:
                     license_info   = excluded.license_info,
                     environment    = excluded.environment,
                     version_output = excluded.version_output,
+                    interfaces     = excluded.interfaces,
                     updated_at     = excluded.updated_at
                 """,
                 (key, device_key, port, model, version, int(bool(upgraded)),
                  status, agent, license_info or "", environment or "",
-                 version_output or "", created, now),
+                 version_output or "", interfaces or "", created, now),
             )
             self._conn.commit()
         return self.get(key)

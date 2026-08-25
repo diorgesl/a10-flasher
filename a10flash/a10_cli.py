@@ -600,6 +600,17 @@ class SerialA10:
             )
         return "ok"
 
+    def boot_to(self, slot, timeout=30):
+        """Muda a partição de boot (configure -> bootimage hd <pri|sec>
+        -> write mem) — o worker chama reboot em seguida para a caixa
+        subir na partição escolhida."""
+        names = {"pri": "primary", "sec": "secondary"}
+        name = names.get(slot, slot)
+        self.cmd("configure terminal", timeout=timeout)
+        self.cmd(f"bootimage hd {name}", timeout=timeout)
+        self.write_memory(timeout=timeout)
+        self.cmd("end", timeout=timeout)
+
     def set_bootimage(self, slot, timeout=15):
         """Marca o slot (primary|secondary) para o próximo boot.
 

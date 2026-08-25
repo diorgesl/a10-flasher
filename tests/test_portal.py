@@ -227,7 +227,12 @@ def test_load_portal_config_env_docker():
             assert cfg["port"] == 8092
             assert cfg["token"] == "do-arquivo"
         finally:
-            os.environ["PORTAL_PORT"] = old["PORTAL_PORT"] or ""
+            # restaura o ambiente original (sem deixar PORTAL_PORT="" —
+            # env vazia quebra int() nos testes seguintes)
+            if old["PORTAL_PORT"] is None:
+                os.environ.pop("PORTAL_PORT", None)
+            else:
+                os.environ["PORTAL_PORT"] = old["PORTAL_PORT"]
 
 
 # ------------------------------------------------------------- e2e
@@ -322,6 +327,79 @@ def test_agente_e2e_loopback():
         agent.stop()
         server.should_exit = True
         thread.join(timeout=5)
+
+
+# ----------------------------------------------------- relatório PDF
+def test_report_endpoint_gera_pdf():
+    """GET /api/devices/{serial}/report -> PDF do equipamento (via LLM).
+
+    A chamada ao LLM é mockada (sem rede); o PDF é gerado de verdade.
+    """
+    import a10flash.portal as portal_mod
+
+    portal = make_portal(llm={"api_key": "sk-teste"})
+    client = TestClient(portal.app)
+    headers = {"X-Token": "segredo"}
+    client.post("/api/devices", headers=headers,
+                json={"serial": "A10TH-REP", "model": "TH5430S",
+                      "version": "5.2.1-P14", "upgraded": True,
+                      "environment": "Fan 1: OK"})
+
+    analise = {
+        "titulo": "Relatório do equipamento A10TH-REP",
+        "resumo": "ok", "identificacao": "x", "firmware": "y",
+        "licencas": "z", "hardware": "w", "recomendacoes": "r",
+    }
+    old = portal_mod.analyze_with_llm
+    portal_mod.analyze_with_llm = lambda rec, cfg: analise
+    try:
+        r = client.get("/api/devices/A10TH-REP/report", headers=headers)
+    finally:
+        portal_mod.analyze_with_llm = old
+
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"].startswith("application/pdf")
+    assert "relatorio-A10TH-REP.pdf" in r.headers["content-disposition"]
+    assert r.content[:5] == b"%PDF-"
+
+    # sem token -> 401; serial inexistente -> 404
+    assert client.get("/api/devices/A10TH-REP/report").status_code == 401
+    assert client.get("/api/devices/NAO-EXISTE/report",
+                      headers=headers).status_code == 404
+
+
+def test_report_endpoint_sem_chave_llm_503():
+    """Portal sem llm.api_key -> 503 com mensagem clara (não chama o LLM)."""
+    portal = make_portal()  # sem seção llm
+    client = TestClient(portal.app)
+    headers = {"X-Token": "segredo"}
+    client.post("/api/devices", headers=headers, json={"serial": "A10TH-NOKEY"})
+    r = client.get("/api/devices/A10TH-NOKEY/report", headers=headers)
+    assert r.status_code == 503
+    assert "api" in r.json()["detail"].lower()
+
+
+def test_load_portal_config_llm_env_docker():
+    """Seção llm do config.yaml + env DEEPSEEK_API_KEY (padrão do deploy)."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "config.yaml")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("llm:\n  api_key: do-arquivo\n  model: deepseek-v4-flash\n")
+        old = os.environ.get("DEEPSEEK_API_KEY")
+        try:
+            os.environ["DEEPSEEK_API_KEY"] = "chave-do-container"
+            cfg = load_portal_config(path)
+            assert cfg["llm"]["api_key"] == "chave-do-container"
+            assert cfg["llm"]["model"] == "deepseek-v4-flash"
+        finally:
+            if old is None:
+                os.environ.pop("DEEPSEEK_API_KEY", None)
+            else:
+                os.environ["DEEPSEEK_API_KEY"] = old
+        # sem env nem seção -> llm presente mas sem chave
+        cfg = load_portal_config(os.path.join(tmp, "nao-existe.yaml"))
+        assert cfg["llm"]["api_key"] == ""
 
 
 def test_agente_token_errado_rejeitado():

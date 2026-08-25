@@ -8,6 +8,7 @@ Rotas:
   GET  /                        -> dashboard (index.html)
   GET  /api/status              -> agentes + dispositivos (REST)
   GET  /api/events?limit=N      -> últimos eventos
+  GET  /api/devices/{serial}/report -> relatório PDF via LLM
   POST /api/devices/{key}/cmd   -> {"command": "abort|pause|resume|rerun"}
   WS   /ws                      -> browser: snapshot + stream + comandos
   WS   /agent                   -> agentes: hello + eventos + recebe comandos
@@ -26,11 +27,12 @@ import time
 import uvicorn
 import yaml
 from fastapi import FastAPI, HTTPException, Request, WebSocket
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from .bus import EventBus
 from .db import DeviceStore
 from .notify import Notifier
+from .report import ReportError, analyze_with_llm, build_pdf, pdf_filename
 
 INDEX_HTML = os.path.join(os.path.dirname(__file__), "web", "index.html")
 COMMANDS = {"abort", "pause", "resume", "rerun"}
@@ -87,6 +89,30 @@ class PortalServer:
             if rec is None:
                 raise HTTPException(status_code=404, detail="equipamento não encontrado")
             return JSONResponse(rec)
+
+        @app.get("/api/devices/{serial}/report")
+        def api_device_report(serial: str, request: Request):
+            """Relatório em PDF do equipamento gerado por LLM.
+
+            Síncrono de propósito: a chamada ao LLM pode levar dezenas de
+            segundos e o FastAPI roda handlers sync numa threadpool, sem
+            congelar o event loop (WS de agentes/browsers).
+            """
+            self._authorize(request)
+            rec = self.store.get(serial)
+            if rec is None:
+                raise HTTPException(status_code=404,
+                                    detail="equipamento não encontrado")
+            try:
+                analysis = analyze_with_llm(rec, self.cfg.get("llm") or {})
+                pdf = build_pdf(analysis)
+            except ReportError as exc:
+                raise HTTPException(status_code=exc.status, detail=str(exc))
+            return Response(
+                content=pdf, media_type="application/pdf",
+                headers={"Content-Disposition":
+                         f'attachment; filename="{pdf_filename(serial)}"'},
+            )
 
         @app.delete("/api/devices/{serial}")
         async def api_device_delete(serial: str, request: Request):
@@ -287,8 +313,8 @@ class PortalServer:
         """Salva o registro do equipamento (device_result) no DB.
 
         Campos aceitos: serial, model, version, upgraded, license_info,
-        environment, version_output, device, port. Retorna o registro
-        salvo (dict).
+        environment, version_output, interfaces, device, port. Retorna o
+        registro salvo (dict).
         """
         try:
             rec = self.store.upsert(
@@ -303,6 +329,7 @@ class PortalServer:
                 license_info=msg.get("license_info", ""),
                 environment=msg.get("environment", ""),
                 version_output=msg.get("version_output", ""),
+                interfaces=msg.get("interfaces", ""),
             )
         except Exception as exc:  # DB cheio, disco, etc. — não derruba o WS
             self.notifier.error(
@@ -365,6 +392,11 @@ def load_portal_config(path):
     portal_cfg["token"] = os.environ.get("PORTAL_TOKEN", portal_cfg.get("token", ""))
     portal_cfg["db_path"] = os.environ.get(
         "PORTAL_DB", portal_cfg.get("db_path", "a10flash.db"))
+    # LLM do relatório em PDF (seção `llm` do config + env DEEPSEEK_API_KEY)
+    llm_cfg = dict(cfg.get("llm") or {})
+    llm_cfg["api_key"] = os.environ.get(
+        "DEEPSEEK_API_KEY", llm_cfg.get("api_key", ""))
+    portal_cfg["llm"] = llm_cfg
     return portal_cfg
 
 

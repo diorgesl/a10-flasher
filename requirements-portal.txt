@@ -1,6 +1,8 @@
 # Dependências do PORTAL apenas (a imagem do servidor não precisa de
-# pyserial; o portal usa urllib no notifier — sem requests).
+# pyserial; o portal usa urllib no notifier e no relatório LLM — sem
+# requests; o PDF usa fpdf2, puro Python, sem libs de sistema).
 fastapi>=0.110
 uvicorn>=0.29
 websockets>=12.0
 pyyaml>=6.0
+fpdf2>=2.8

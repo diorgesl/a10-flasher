@@ -110,7 +110,9 @@ acompanhamento e registro dos equipamentos.
 
 - Worker: `_collect_device_info(cli)` — serial (`get_serial` do show
   version) + saídas brutas de `show version`/`show license-info`/
-  `show environment`; **cada leitura tolerante a falha** (não quebra o ciclo).
+  `show environment`/`show interfaces`; **cada leitura tolerante a
+  falha** (não quebra o ciclo). Coluna `interfaces` no SQLite com
+  migração `ALTER TABLE` para DBs antigos.
 - `_publish_device_result` (só no sucesso) → bus → agente `_forward`
   (repassa TUDO do bus) → portal WS `/agent` (`AGENT_TYPES` inclui
   `device_result`) → `DeviceStore.upsert` → publica `device_saved` →

@@ -87,6 +87,15 @@ portal_server:
   # volume montado: PORTAL_DB=/data/a10flash.db (ver docker-compose).
   db_path: a10flash.db
 
+# LLM do relatório em PDF dos equipamentos (botão na tabela do dashboard).
+# A chave pode vir daqui ou da env var DEEPSEEK_API_KEY (preferida no
+# Docker — o compose repassa do .env, mesmo padrão do PORTAL_TOKEN).
+llm:
+  api_key: ""                 # ou env DEEPSEEK_API_KEY
+  base_url: "https://api.deepseek.com"
+  model: "deepseek-v4-flash"
+  timeout: 120                # segundos, chamada completa do relatório
+
 portal_agent:
   url: "wss://a10.app.diorg.es/agent"
   agent_id: "lab-1"

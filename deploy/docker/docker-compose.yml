@@ -4,8 +4,9 @@
 #   1. Crie a rede externa do Traefik (ou use o nome da sua):
 #        docker network create traefik-public
 #      Se a sua rede tem outro nome, ajuste em `networks` abaixo.
-#   2. Defina o token no .env (junto deste arquivo):
+#   2. Defina o token e a chave do LLM no .env (junto deste arquivo):
 #        PORTAL_TOKEN=um-token-forte
+#        DEEPSEEK_API_KEY=sk-...  (relatório em PDF; opcional)
 #   3. O domínio a10.app.diorg.es deve apontar (DNS A) para o host do Traefik.
 #   4. O certresolver do seu Traefik precisa se chamar `letsencrypt`
 #      (ajuste o label se o seu tem outro nome).
@@ -31,6 +32,8 @@ services:
       PORTAL_PORT: 8080
       # DB dos equipamentos registrados (persistente no volume abaixo)
       PORTAL_DB: /data/a10flash.db
+      # Chave do LLM do relatório em PDF (DeepSeek) — do .env
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
     volumes:
       - a10flash-logs:/opt/a10-flasher/logs
       - a10flash-db:/data
@@ -70,6 +73,11 @@ services:
 volumes:
   a10flash-logs:
   a10flash-db:
+    # Nome FIXO (sem prefixo do projeto do compose): o DB dos equipamentos
+    # sobrevive a rebuilds do container E a mudanças de diretório/project
+    # name. NUNCA rodar `docker compose down -v` (apaga os volumes) —
+    # `down` sem -v preserva o DB.
+    name: a10flash-db
 
 networks:
   traefik-public:
