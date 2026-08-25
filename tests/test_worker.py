@@ -137,11 +137,11 @@ def test_upgrade_acos_2x_forca_metodo_cli():
         fake.close()
 
 
-def test_boot_na_particao_mais_nova_antes_do_upgrade():
-    """Caixa bootando 2.x com a OUTRA partição já em 4.x (caso real de
-    bancada: primary 4.1.4, secondary 2.7.2 bootada): o worker muda o
-    boot para a partição mais nova, reinicia e segue de lá — sem CLI no
-    2.x (que cortava o comando longo no meio da URL)."""
+def test_boot_na_particao_do_target_antes_do_upgrade():
+    """Caixa bootando 2.x com a OUTRA partição já na versão da config
+    (caso real de bancada: primary 4.1.4, secondary 2.7.2 bootada): o
+    worker muda o boot para a partição do target, reinicia e segue de lá
+    — sem CLI no 2.x (que cortava o comando longo no meio da URL)."""
     fake = FakeA10(version="4.1.4", secondary="2.7.2-P12-SP3",
                    booted="secondary", reboot_delay=0.5)
     axapi = FakeAxapiServer(sw_version="4.1.4")
@@ -149,13 +149,50 @@ def test_boot_na_particao_mais_nova_antes_do_upgrade():
         result, _ = run_worker(make_cfg(), fake, axapi)
         assert result["status"] == "success", result
         assert result["version"] == "4.1.4"
-        # trocou o boot para a partição 4.x e reiniciou
+        # trocou o boot para a partição do target e reiniciou
         assert any(c.startswith("bootimage") for c in fake.commands)
         assert "reboot" in fake.commands
         # sem upgrade via serial (CLI 2.x) e sem upgrade AXAPI (já no alvo)
         assert not [c for c in fake.commands if c.startswith("upgrade hd")]
         assert not [c for c in axapi.calls if c[1].endswith("/upgrade/hd")]
         assert "erase" in fake.commands  # ciclo completo até o reset
+    finally:
+        axapi.stop()
+        fake.close()
+
+
+def test_boot_switch_nao_troca_p5_por_p14_da_config():
+    """Bootada em 5.2.1-P14.73 (A VERSÃO DA CONFIG) com a outra em
+    5.2.1-p5.114: NÃO troca. O comparador antigo (build 114 > 73)
+    trocava para a partição mais VELHA e oscilava entre partições a
+    cada ciclo."""
+    fake = FakeA10(version="5.2.1-p5.114", secondary="5.2.1-P14.73",
+                   booted="secondary", reboot_delay=0.5)
+    axapi = FakeAxapiServer(sw_version="5.2.1-P14.73")
+    try:
+        cfg = make_cfg(device={"target_version": "5.2.1-P14"})
+        result, _ = run_worker(cfg, fake, axapi)
+        assert result["status"] == "success", result
+        assert not any(c.startswith("bootimage") for c in fake.commands)
+        assert "erase" in fake.commands
+    finally:
+        axapi.stop()
+        fake.close()
+
+
+def test_boot_switch_nao_troca_por_versao_fora_da_config():
+    """Bootada NA versão da config com a outra partição em versão MAIS
+    NOVA mas FORA da config (6.0.0): NÃO troca — a regra é a versão da
+    config, não 'a mais nova' (trocar subiria numa família desconhecida
+    do firmware_map)."""
+    fake = FakeA10(version="6.0.0", secondary="5.2.1-P14.73",
+                   booted="secondary", reboot_delay=0.5)
+    axapi = FakeAxapiServer(sw_version="5.2.1-P14.73")
+    try:
+        cfg = make_cfg(device={"target_version": "5.2.1-P14"})
+        result, _ = run_worker(cfg, fake, axapi)
+        assert result["status"] == "success", result
+        assert not any(c.startswith("bootimage") for c in fake.commands)
     finally:
         axapi.stop()
         fake.close()

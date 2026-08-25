@@ -54,9 +54,13 @@ class VersionError(ValueError):
 
 
 def version_tuple(version):
-    """Converte '4.1.4-GR1-P14' -> (4, 1, 4, 14). Retorna None se inválido.
+    """Converte '4.1.4-GR1-P14' -> (4, 1, 4, 14, 1). None se inválido.
 
-    O build é o ÚLTIMO número do sufixo ("-GR1-P14" -> 14, "-P2" -> 2).
+    Ordem: core (x.y.z), NÍVEL DE PATCH ([Pp]<n>), e os demais números
+    do sufixo em ordem (GR, SP, build). O patch decide entre releases —
+    '5.2.1-P14.73' > '5.2.1-p5.114' (patch 14 > patch 5); o build final
+    NÃO decide (repro de bancada: comparar o build trocava o boot para a
+    partição MAIS VELHA e oscilava entre partições a cada ciclo).
     """
     if not version:
         return None
@@ -64,12 +68,14 @@ def version_tuple(version):
     if not m:
         return None
     core = tuple(int(x) for x in m.groups())
-    build = 0
     rest = version[m.end():]
-    rm = re.search(r"(\d+)\s*\Z", rest)
-    if rm:
-        build = int(rm.group(1))
-    return core + (build,)
+    pm = re.search(r"(?:^|[-.])[Pp](\d+)", rest)
+    patch = int(pm.group(1)) if pm else 0
+    if pm:
+        # remove o P já contado para os números restantes ficarem em ordem
+        rest = rest[:pm.start()] + " " + rest[pm.end():]
+    tail = tuple(int(x) for x in re.findall(r"\d+", rest))
+    return core + (patch,) + tail
 
 
 def compare_versions(a, b):

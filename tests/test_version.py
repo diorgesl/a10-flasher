@@ -42,9 +42,10 @@ def test_version_tuple():
 
 
 def test_version_padrao_gr():
-    """Padrão de release A10: 4.1.4-GR1-P14 (build = último número)."""
-    assert version_tuple("4.1.4-GR1-P14") == (4, 1, 4, 14)
-    assert version_tuple("4.1.4-GR1-P2") == (4, 1, 4, 2)
+    """Padrão de release A10: 4.1.4-GR1-P14 — o nível de PATCH é o 4º
+    componente (o GR1 vem depois, não decide entre P14 e P2)."""
+    assert version_tuple("4.1.4-GR1-P14") == (4, 1, 4, 14, 1)
+    assert version_tuple("4.1.4-GR1-P2") == (4, 1, 4, 2, 1)
     assert compare_versions("4.1.4-GR1-P14", "4.1.4-GR1-P2") == 1
     assert compare_versions("4.1.4-GR1-P14", "4.1.4") == 1
     assert parse_acos_version(
@@ -119,6 +120,17 @@ def test_compare():
     assert compare_versions("4.1.4-P2", "4.1.4") == 1
     assert compare_versions("5.2.1", "4.1.4-P2") == 1
     assert compare_versions("4.1.4", "zzz") is None
+
+
+def test_compara_patch_antes_de_build():
+    """O nível de PATCH decide, não o build final: '5.2.1-P14.73' >
+    '5.2.1-p5.114' (patch 14 > patch 5). O parser antigo comparava o
+    build (114 > 73) e o boot-switch trocava para a partição MAIS VELHA,
+    oscilando entre partições a cada ciclo."""
+    assert compare_versions("5.2.1-P14.73", "5.2.1-p5.114") == 1
+    assert compare_versions("5.2.1-p5.114", "5.2.1-P14.73") == -1
+    # SP (service pack) também pesa antes do build final
+    assert compare_versions("2.7.2-P12-SP4.1", "2.7.2-P12-SP3.9") == 1
 
 
 def test_parse_bootimage():

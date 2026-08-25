@@ -91,6 +91,14 @@ acompanhamento e registro dos equipamentos.
   era truncado no meio da URL e rejeitado com `^`. Se as duas partições
   forem 2.x, o caminho/arquivo no servidor sftp PRECISA ser curto
   (symlink); o erro agora avisa com a dica.
+- **Comparação de versões: o PATCH (P<n>) decide, não o build final** —
+  `5.2.1-P14.73` > `5.2.1-p5.114` (P14 > P5; o parser antigo comparava
+  o 114 vs 73 e trocava o boot para a partição mais VELHA, oscilando a
+  cada ciclo). `version_tuple` = core + P-level + resto (GR/SP/build).
+- **Boot-switch pela VERSÃO DA CONFIG, não pela mais nova**: `_cycle`
+  muda o boot só se a partição não-bootada casa com o target do config
+  (target_version/firmware_map) e a bootada não. Comparação relativa
+  entre slots subia em família fora da config (ex.: 6.0.0).
 - **IP de gerência legado `172.31.31.31`** (estático da bancada antiga,
   sem rota pro servidor sftp): `_ensure_mgmt_ip` troca para DHCP
   (`conf`/`interface management`/`ip address dhcp`) e espera o IP novo —

@@ -304,11 +304,11 @@ class FlashWorker:
                 f"slots {bootimage}",
             )
 
-            # partição NÃO bootada mais nova que a atual? Muda o boot
-            # pra ela e reinicia (ex.: secondary 2.x bootada com primary
-            # já em 4.x — o 4.x permite AXAPI e evita o CLI no 2.x, que
-            # corta comando longo no meio da URL)
-            if self._boot_newest_slot(cli, bootimage):
+            # partição NÃO bootada na versão da CONFIG e a bootada não?
+            # Muda o boot pra ela e reinicia (ex.: secondary 2.x bootada
+            # com primary já no target — o 4.x permite AXAPI e evita o
+            # CLI no 2.x, que corta comando longo no meio da URL)
+            if self._boot_configured_slot(cli, bootimage):
                 cli = self._wait_and_login()
                 self._wait_ready(cli)
                 version = cli.get_version()
@@ -316,7 +316,7 @@ class FlashWorker:
                 bootimage = cli.get_bootimage()
                 self.notifier.info(
                     self.device,
-                    f"Equipamento na partição mais atual: ACOS {version} "
+                    f"Equipamento na partição da config: ACOS {version} "
                     f"— slots {bootimage}")
 
             # retrato do equipamento coletado AGORA (caixa estável):
@@ -777,16 +777,56 @@ class FlashWorker:
             raise FlashError(f"upgrade via CLI falhou: {exc}") from exc
 
     # ------------------------------------------------------ decisão
-    def _boot_newest_slot(self, cli, bootimage):
-        """Se a partição NÃO bootada está numa versão MAIS NOVA que a
-        bootada, muda o boot para ela (configure -> bootimage hd ->
-        write mem) — o `_cycle` chama reboot em seguida.
+    def _configured_targets(self):
+        """Versões desejadas do config (target_version + todas as
+        versions do firmware_map) como tuples de versão — a referência
+        do boot-switch e do upgrade."""
+        dev_cfg = self.cfg.get("device", {})
+        targets = []
+        for v in [dev_cfg.get("target_version", "")]:
+            t = version_tuple(v)
+            if t:
+                targets.append(t)
+        fw_map = dev_cfg.get("firmware_map") or {}
+        if isinstance(fw_map, dict):
+            for spec in fw_map.values():
+                if not isinstance(spec, dict):
+                    continue
+                for item in (spec.get("versions") or []):
+                    if not isinstance(item, dict):
+                        continue
+                    t = version_tuple(item.get("version"))
+                    if t:
+                        targets.append(t)
+        return targets
 
-        Repro de bancada: caixa bootando 2.x com a primary já em 4.x —
-        subir na 4.x permite AXAPI e evita o CLI no 2.x (que cortava o
-        comando de upgrade no meio da URL).
+    @staticmethod
+    def _matches_target(ver, targets):
+        """A versão do slot é uma das versões da config? (core + patch
+        iguais — o build final não conta: '5.2.1-P14.73' casa com
+        '5.2.1-P14')."""
+        t = version_tuple(ver)
+        if t is None:
+            return False
+        for target in targets:
+            if t[:len(target)] == target:
+                return True
+        return False
+
+    def _boot_configured_slot(self, cli, bootimage):
+        """Se a partição NÃO bootada está na versão da CONFIG e a bootada
+        NÃO, muda o boot para ela (configure -> bootimage hd -> write
+        mem) — o `_cycle` chama reboot em seguida.
+
+        A regra é a versão do config, NÃO "a mais nova": comparar entre
+        slots trocava o boot para partição mais velha (build 114 vs 73
+        no p5/P14) e oscilava a cada ciclo; e trocar para versão fora da
+        config subiria numa família desconhecida do firmware_map.
         Retorna True se mudou o boot (o caller reinicia e re-loga).
         """
+        targets = self._configured_targets()
+        if not targets:
+            return False
         primary = bootimage.get("primary")
         secondary = bootimage.get("secondary")
         default = bootimage.get("default")
@@ -795,12 +835,13 @@ class FlashWorker:
         booted_ver = secondary if default == "secondary" else primary
         other_ver = primary if default == "secondary" else secondary
         other_slot = "primary" if default == "secondary" else "secondary"
-        cmpv = compare_versions(other_ver, booted_ver)
-        if cmpv is not None and cmpv > 0:
+        booted_ok = self._matches_target(booted_ver, targets)
+        other_ok = self._matches_target(other_ver, targets)
+        if other_ok and not booted_ok:
             self.notifier.info(
                 self.device,
-                f"Partição {other_slot} mais atual ({other_ver} > "
-                f"{booted_ver}) — mudando o boot e reiniciando...")
+                f"Partição {other_slot} na versão da config "
+                f"({other_ver}) — mudando o boot e reiniciando...")
             try:
                 cli.boot_to(other_slot)
             except A10Error as exc:
