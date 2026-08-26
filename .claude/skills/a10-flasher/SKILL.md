@@ -118,6 +118,10 @@ acompanhamento e registro dos equipamentos.
 - AXAPI: POST `/upgrade/hd` com `file-url` (sftp:// aceito direto) +
   `use-mgmt-port: 1`; o equipamento PUXA a imagem pela gerência. Detalhes
   do polling em `references/axapi-upgrade.md`.
+- **TLS legado no cliente AXAPI**: o ACOS 4.x só fala TLS 1.0/1.1 e o
+  Python moderno nem oferece → `[SSL: UNSUPPORTED_PROTOCOL]` na auth.
+  O cliente monta HTTPS com `minimum_version=TLSv1` (caixas novas seguem
+  negociando TLS 1.2+; bench em LAN privada).
 - AXAPI precisa do IP da gerência (lido via `show interfaces management`,
   dual-formato; sem IP → `ip address dhcp` + poll 40s).
 - `upgrade_slot: booted` (BANCADA: SEMPRE o slot bootado) | `auto`

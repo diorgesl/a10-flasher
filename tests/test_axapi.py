@@ -147,3 +147,16 @@ def test_polling_sem_flag_falha_na_conexao():
                        poll_every=0.2)
     finally:
         srv.stop()
+
+
+def test_axapi_oferece_tls_legado():
+    """O cliente AXAPI oferece TLS 1.0+ na negociação — o ACOS 4.x só
+    fala TLS velho e o Python moderno nem oferece (repro de bancada:
+    [SSL: UNSUPPORTED_PROTOCOL] na auth em 4.1.4). Caixas novas seguem
+    negociando TLS 1.2+ (o mínimo não abaixa o teto)."""
+    import ssl
+    from a10flash.a10_axapi import legacy_tls_context
+    ctx = legacy_tls_context()
+    assert ctx.minimum_version == ssl.TLSVersion.TLSv1
+    assert ctx.verify_mode == ssl.CERT_NONE
+    assert ctx.check_hostname is False

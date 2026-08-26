@@ -8,16 +8,43 @@ Referência de implementação: ACOS-Upgrade (A10 Networks, 2017).
 """
 
 import json
+import ssl
 import time
 
 import requests
 import urllib3
+from urllib3.util.ssl_ import create_urllib3_context
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 class AxapiError(Exception):
     """Falha numa chamada AXAPI (HTTP, autenticação ou upgrade)."""
+
+
+def legacy_tls_context():
+    """SSLContext que OFERECE TLS antigo (TLSv1+), sem verificação de
+    certificado (a caixa usa self-signed).
+
+    O AXAPI do ACOS 4.x só fala TLS 1.0/1.1 — o Python moderno nem
+    oferece esses protocolos e o servidor rejeita com '[SSL:
+    UNSUPPORTED_PROTOCOL]'. O mínimo TLSv1 não abaixa a segurança das
+    caixas novas (continuam negociando TLS 1.2+). Bench em LAN
+    privada — aceitável.
+    """
+    ctx = create_urllib3_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    ctx.minimum_version = ssl.TLSVersion.TLSv1
+    return ctx
+
+
+class _LegacyTLSHTTPAdapter(requests.adapters.HTTPAdapter):
+    """Adapter HTTPS com o contexto de TLS legado (ACOS 4.x)."""
+
+    def init_poolmanager(self, *args, **kwargs):
+        kwargs["ssl_context"] = legacy_tls_context()
+        return super().init_poolmanager(*args, **kwargs)
 
 
 class A10Axapi:
@@ -29,6 +56,8 @@ class A10Axapi:
         self.verify = verify
         self.session = requests.Session()
         self.session.verify = verify
+        # TLS legado: caixas antigas (4.x) só falam TLS 1.0/1.1
+        self.session.mount("https://", _LegacyTLSHTTPAdapter())
         self.token = None
         self._auth(username, password)
 
