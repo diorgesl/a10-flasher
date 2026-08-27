@@ -38,11 +38,13 @@ acompanhamento e registro dos equipamentos.
    no bus → agente repassa → portal salva no SQLite → dashboard atualiza
 5. **MODO TESTE (após sucesso OU caixa já processada/skip)**: a caixa
    fica CONECTADA na serial; o worker coleta o uptime (`show version` →
-   `parse_uptime`) a cada `device.test_interval_h` (default 6) até a
+   `parse_uptime`) a cada `device.test_interval_h` (default 1) até a
    caixa ser desconectada (porta some) ou `abort` do portal → publica
    `uptime_sample` → portal salva em `uptime_samples` → histórico no
    dashboard (`GET /api/devices/{serial}/uptime`). Sessão caiu? Reloga
-   sozinho. A amostra imediata sai ANTES do evento `test_mode`.
+   sozinho. A amostra imediata sai ANTES do evento `test_mode`. O portal
+   guarda a amostra com try/except — falha de DB loga o erro e NÃO
+   derruba a conexão do agente (antes caía em silêncio).
    TESTES: o fake NÃO "despluga" de verdade (o node do pty persiste no
    macOS enquanto o worker segura o fd) — os helpers patcheiam
    `os.path.exists` para o caminho do fake no evento `test_mode`.

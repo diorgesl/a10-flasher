@@ -1182,15 +1182,15 @@ def test_wait_ready_reloga_tela_de_senha():
         fake.close()
 
 
-def test_marcacao_antecipada_bloqueia_segundo_worker_mesma_caixa():
-    """Anti-loop reforçado: se o 1º ciclo FALHA no meio (pós-reset), o
-    serial já foi marcado ANTES das ações destrutivas — outro worker na
-    mesma caixa (2º adaptador/porta, como ttyUSB0+ttyUSB1 do lab real)
-    pula, sem resetar de novo."""
+def test_falha_no_ciclo_nao_marca_caixa_no_cache():
+    """Se o ciclo FALHA antes de registrar no DB, a caixa NÃO entra no
+    processed_serials.json — um re-plugue reprocessa (e registra) em vez
+    de pular para sempre (caixa marcada sem registro no portal)."""
     import tempfile
     from a10flash.bus import EventBus
     from a10flash.notify import Notifier
     from a10flash.power import PowerController
+    from a10flash.state import ProcessedSerials
 
     with tempfile.TemporaryDirectory() as tmp:
         orig_exists = os.path.exists   # restaurado no finally (unplug fake)
@@ -1199,7 +1199,7 @@ def test_marcacao_antecipada_bloqueia_segundo_worker_mesma_caixa():
         cfg["upgrade"]["boot_wait"] = 5   # pós-reset falha rápido
         # caixa que NUNCA volta do reboot (reset falha)
         fake1 = FakeA10(version="4.1.4", booted="primary",
-                        mgmt_ip="10.0.0.10", reboot_delay=200,
+                        mgmt_ip="10.0.0.10", reboot_delay=20,
                         serial="A10TH-LOOP-002")
         axapi = FakeAxapiServer(sw_version="4.1.4")
         try:
@@ -1210,8 +1210,10 @@ def test_marcacao_antecipada_bloqueia_segundo_worker_mesma_caixa():
                              axapi_base_override=axapi.base_url(), bus=bus)
             r1 = w1.run()
             assert r1["status"] != "success", r1  # falhou no pós-reset
-            # a caixa foi marcada ANTES do reset: um 2º worker na mesma
-            # caixa (porta diferente) NÃO roda reset de novo
+            # a caixa NÃO foi marcada: o cache está vazio e um 2º worker
+            # na mesma caixa (porta diferente) reprocessa de verdade
+            assert not ProcessedSerials(state_file).contains("A10TH-LOOP-002"), \
+                "ciclo falhou mas o serial entrou no processed_serials.json"
             fake2 = FakeA10(version="4.1.4", booted="primary",
                             mgmt_ip="10.0.0.10", reboot_delay=0.2,
                             serial="A10TH-LOOP-002")
@@ -1221,9 +1223,11 @@ def test_marcacao_antecipada_bloqueia_segundo_worker_mesma_caixa():
                              _fake_port_gone(fake2) if det == "test_mode"
                              else None)
             r2 = w2.run()
-            assert r2["status"] == "skipped", r2
-            assert fake2.commands.count("reboot") == 0
-            assert fake2.commands.count("erase") == 0
+            assert r2["status"] == "success", r2  # reprocessou completo
+            assert fake2.commands.count("reboot") >= 1
+            assert fake2.commands.count("erase") >= 1
+            # e AGORA (com sucesso + registro) a caixa está no cache
+            assert ProcessedSerials(state_file).contains("A10TH-LOOP-002")
         finally:
             os.path.exists = orig_exists   # desfaz o patch do unplug
             axapi.stop()
@@ -1395,3 +1399,63 @@ def test_caixa_ja_processada_entra_no_modo_teste():
     finally:
         axapi.stop()
         fake.close()
+
+
+def test_skip_republica_registro_no_bus():
+    """Caixa já processada (skip) RE-publica o device_result: se o
+    publish do ciclo original se perdeu (agente offline na hora), o
+    re-plugue recupera o registro no portal em vez de pular para sempre
+    sem registrar."""
+    import tempfile
+    from a10flash.bus import EventBus
+    from a10flash.notify import Notifier
+    from a10flash.power import PowerController
+
+    with tempfile.TemporaryDirectory() as tmp:
+        state_file = os.path.join(tmp, "processed_serials.json")
+        cfg = make_cfg(monitor={"state_file": state_file})
+        fake = FakeA10(version="4.1.4", booted="primary",
+                       mgmt_ip="10.0.0.10", reboot_delay=0.5,
+                       serial="A10TH-LOOP-010")
+        axapi = FakeAxapiServer(sw_version="4.1.4")
+        try:
+            notifier = Notifier(log_file=None)
+            power = PowerController(cfg.get("power", {}), notifier)
+            bus = EventBus()
+            w1 = FlashWorker(cfg, "fake-a10", fake.port, notifier, power,
+                             axapi_base_override=axapi.base_url(), bus=bus,
+                             on_event=lambda d, s, det:
+                             _fake_port_gone(fake) if det == "test_mode"
+                             else None)
+            r1 = w1.run()
+            assert r1["status"] == "success", r1
+            # 2º ciclo (re-plugue): skip + RE-publica o registro
+            # (a fila é assinada SÓ agora — eventos do 1º ciclo ficam
+            # no histórico, não chegam aqui)
+            fake2 = FakeA10(version="4.1.4", booted="primary",
+                            mgmt_ip="10.0.0.10", reboot_delay=0.5,
+                            serial="A10TH-LOOP-010")
+            sid, q = bus.subscribe()
+            w2 = FlashWorker(cfg, "fake-a10", fake2.port, notifier, power,
+                             axapi_base_override=axapi.base_url(), bus=bus,
+                             on_event=lambda d, s, det:
+                             _fake_port_gone(fake2) if det == "test_mode"
+                             else None)
+            r2 = w2.run()
+            assert r2["status"] == "skipped", r2
+            found = None
+            while True:
+                try:
+                    ev = q.get(timeout=0.5)
+                except Exception:
+                    break
+                if ev.get("type") == "device_result":
+                    found = ev
+            bus.unsubscribe(sid)
+            assert found is not None, \
+                "o skip deveria re-publicar o device_result no bus"
+            assert found["serial"] == "A10TH-LOOP-010"
+            fake2.close()
+        finally:
+            axapi.stop()
+            fake.close()

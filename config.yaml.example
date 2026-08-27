@@ -10,6 +10,9 @@ device:
   username: admin
   password: a10
   enable_password: ""
+  # modo teste: coleta de uptime a cada N horas até a caixa ser
+  # desconectada da serial (amostras salvas no portal -> histórico)
+  test_interval_h: 1
   target_version: "4.1.4-GR1-P14"
   # upgrade_newer: cada caixa sobe para a MAIS NOVA da MESMA família
   # (4.x -> 4.1.4-GR1-P14, 5.x -> 5.2.1-P14). Nunca rebaixa, nunca pula família.

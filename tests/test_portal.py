@@ -301,10 +301,14 @@ def test_agente_e2e_loopback():
         assert ev["agent"] == "lab-1"
 
         # 3. comando do browser -> servidor -> agente -> monitor -> ack
+        #    (o PORTAL manda um ack de roteamento na hora; espera o ack
+        #    de EXECUÇÃO do agente — message 'ok (fake)' — que só sai
+        #    DEPOIS do monitor registrar o comando)
         browser.send(json.dumps({"type": "cmd", "device": "dev-a",
                                  "command": "abort", "reason": "teste"}))
         ack = _read_until(browser, lambda m: m.get("type") == "cmd_ack"
-                          and m.get("command") == "abort")
+                          and m.get("command") == "abort"
+                          and m.get("message") == "ok (fake)")
         assert ack["ok"] is True
         # o monitor fake registrou o comando
         assert ("cmd", "dev-a", "abort", "teste") in monitor.calls
@@ -464,3 +468,32 @@ def test_uptime_sample_ws_salva_e_endpoint_lista():
     assert samples[0]["uptime_s"] == 9000   # mais recente primeiro
     # sem token -> 401
     assert client.get("/api/devices/A10TH-UP-001/uptime").status_code == 401
+
+
+def test_uptime_sample_com_falha_no_db_nao_derruba_agente():
+    """Erro ao salvar amostra de uptime NÃO pode derrubar a conexão do
+    agente: o except externo do ws_agent engolia a exceção e o agente
+    caía sem NENHUM erro visível ('modo teste nunca salva em lugar
+    nenhum' do lab)."""
+    portal = make_portal()
+    seen = []
+
+    def boom(*a, **k):
+        raise RuntimeError("db cheio")
+
+    portal.store.add_uptime_sample = boom
+    portal.notifier.error = lambda dev, msg: seen.append(msg)
+    client = TestClient(portal.app)
+    with client.websocket_connect("/agent?token=segredo&agent=lab-1") as ws:
+        ws.send_json({"type": "hello", "agent": "lab-1"})
+        assert ws.receive_json()["type"] == "welcome"
+        ws.send_json({"type": "uptime_sample", "device": "ttyUSB0",
+                      "serial": "A10TH-UP-002", "ts": 1.0, "uptime_s": 10})
+        time.sleep(0.3)
+        # a conexão segue VIVA: um status seguinte ainda é processado
+        ws.send_json({"type": "status", "device": "ttyUSB0",
+                      "state": "running", "port": "/dev/ttyUSB0"})
+        time.sleep(0.3)
+        assert portal.agents["lab-1"]["online"] is True
+    # e o erro foi REGISTRADO (não engolido em silêncio)
+    assert any("uptime" in m for m in seen), seen

@@ -120,6 +120,7 @@ def test_pause_resume():
     """Pause após o login segura o ciclo; resume libera (determinístico)."""
     fake = FakeA10(version="4.1.4", booted="primary", reboot_delay=0.5)
     axapi = FakeAxapiServer(sw_version="4.1.4")
+    orig_exists = os.path.exists
     try:
         bus = EventBus()
         notifier = Notifier(log_file=None, bus=bus)
@@ -133,6 +134,11 @@ def test_pause_resume():
             if dt == "logged_in" and not state["paused_once"]:
                 state["paused_once"] = True
                 mailbox.send({"command": "pause"})
+            elif dt == "test_mode":
+                # o pty do fake não "despluga" de verdade no macOS —
+                # patch no exists para o modo teste encerrar
+                os.path.exists = lambda p, orig=orig_exists, port=fake.port: (
+                    False if p == port else orig(p))
 
         worker = FlashWorker(make_cfg(), "fake-a10", fake.port, notifier,
                              power, axapi_base_override=axapi.base_url(),
@@ -157,6 +163,7 @@ def test_pause_resume():
         assert result["status"] == "success", result
         assert "show version" in fake.commands
     finally:
+        os.path.exists = orig_exists
         axapi.stop()
         fake.close()
 

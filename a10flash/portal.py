@@ -237,9 +237,20 @@ class PortalServer:
                              "agents": self._agents_summary()})
                     elif msg.get("type") == "uptime_sample":
                         # modo teste: amostra de uptime -> histórico no DB
-                        self.store.add_uptime_sample(
-                            msg.get("serial", ""), msg.get("uptime_s", 0),
-                            msg.get("ts"))
+                        try:
+                            self.store.add_uptime_sample(
+                                msg.get("serial", ""), msg.get("uptime_s", 0),
+                                msg.get("ts"))
+                        except Exception as exc:
+                            # DB cheio/disco etc. — registra o erro e
+                            # SEGUE: uma falha aqui não pode derrubar a
+                            # conexão do agente (antes o except externo
+                            # engolia tudo e o agente caía em silêncio)
+                            self.notifier.error(
+                                None,
+                                f"falha ao salvar amostra de uptime de "
+                                f"{msg.get('serial') or msg.get('device')}: "
+                                f"{exc}")
                         continue
                     elif msg.get("type") in AGENT_TYPES:
                         if msg.get("type") == "device_result":

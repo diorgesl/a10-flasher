@@ -338,6 +338,16 @@ class FlashWorker:
             # desconectar
             serial = device_info.get("serial")
             if self._skip_if_processed(serial, version):
+                # re-publica o registro (upsert) — se o publish do ciclo
+                # original se perdeu (agente offline na hora), o
+                # re-plugue recupera a caixa no portal em vez de pular
+                # para sempre sem registrar
+                self._publish_device_result({
+                    "status": "success",
+                    "version": version,
+                    "upgraded": False,
+                    "device_info": device_info,
+                })
                 samples = self._test_mode(cli, serial)
                 return {"status": "skipped", "version": version,
                         "upgraded": False, "serial": serial,
@@ -349,13 +359,9 @@ class FlashWorker:
             self.notifier.info(self.device, dec["motivo"])
             need_upgrade = dec["upgrade"]
 
-            # MARCA ANTES das ações destrutivas: se o ciclo falhar no
-            # meio (upgrade/reset), a caixa NÃO será reprocessada em
-            # loop por outra porta/plugue — o operador usa 'Repetir
-            # ciclo' no portal para forçar.
-            serial = device_info.get("serial")
-            if serial:
-                self._mark_processed(serial)
+            # a caixa só é marcada como processada DEPOIS de registrar
+            # no portal — se o ciclo falhar antes do publish, ela fica
+            # FORA do cache e um re-plugue reprocessa (e registra).
 
             order = res_cfg.get("order", "after_upgrade")
             if need_upgrade and order == "before_upgrade":
@@ -409,7 +415,6 @@ class FlashWorker:
             # com a caixa estável — pós-reset só confirma a versão e salva.
             # A versão do registro é a FINAL (pós-upgrade), não a da coleta.
             device_info["version"] = version
-            self._mark_processed(device_info.get("serial"))
             self.notifier.info(
                 self.device,
                 f"Registro: serial={device_info.get('serial') or 'N/D'} "
@@ -432,6 +437,10 @@ class FlashWorker:
             # o DB sem o equipamento durante todo o monitoramento (e
             # perdia o registro se o modo fosse abortado).
             self._publish_device_result(result)
+            # marca como processada SÓ DEPOIS do registro ter saído para
+            # o portal — caixa que falhou antes daqui fica fora do cache
+            # e é reprocessada (e registrada) num re-plugue
+            self._mark_processed(device_info.get("serial"))
             # MODO TESTE: a caixa atualizada fica conectada na serial
             # coletando uptime até ser desconectada (ou abort do portal)
             samples = self._test_mode(cli, device_info.get("serial"))
@@ -1128,7 +1137,7 @@ class FlashWorker:
         Retorna o número de amostras coletadas.
         """
         interval = (float(self.cfg.get("device", {})
-                          .get("test_interval_h", 6)) * 3600)
+                          .get("test_interval_h", 1)) * 3600)
         samples = 0
         next_at = 0.0   # primeira coleta é imediata
         self._state = "test_mode"

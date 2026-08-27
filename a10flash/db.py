@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS devices (
 );
 """
 
-# Amostras de uptime do modo teste (uma linha por coleta a cada 6h)
+# Amostras de uptime do modo teste (uma linha por coleta; intervalo
+# configurável em device.test_interval_h, default 1h)
 _UPTIME_SCHEMA = """
 CREATE TABLE IF NOT EXISTS uptime_samples (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
