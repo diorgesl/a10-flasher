@@ -1292,6 +1292,26 @@ def test_cache_antiloop_skips_caixa_processada():
             fake.close()
 
 
+def test_reset_com_reboot_atrasado_aguarda_reboot_real():
+    """Caixa que SÓ reinicia dezenas de segundos depois do erase
+    (console continua vivo na sessão antiga): o ciclo NÃO pode tratar
+    o login na sessão velha como 'voltou' e quebrar no show version
+    com a tela de boot — espera o uptime confirmar o reboot real."""
+    fake = FakeA10(version="4.1.4", booted="primary", mgmt_ip="10.0.0.10",
+                   reboot_delay=0.5, reboot_pending_delay=10)
+    try:
+        # boot_wait folgado: o reboot atrasado + relogin consomem tempo
+        cfg = make_cfg(upgrade={"boot_wait": 120})
+        result, events = run_worker(cfg, fake)
+        assert result["status"] == "success", result
+        assert result["version"] == "4.1.4"
+        # o ciclo viu o reboot de verdade (não confundiu a sessão antiga
+        # com a caixa "de volta")
+        assert "back_online" in events
+    finally:
+        fake.close()
+
+
 def test_modo_teste_coleta_uptime_e_encerra_na_desconexao(monkeypatch):
     """Ciclo com sucesso -> modo teste: amostra IMEDIATA de uptime +
     nova coleta a cada intervalo; o worker encerra quando a porta some
@@ -1339,7 +1359,9 @@ def test_modo_teste_coleta_uptime_e_encerra_na_desconexao(monkeypatch):
         assert result.get("test_mode") is True
         assert result.get("uptime_samples", 0) >= 2
         assert len(samples) >= 2
-        assert samples[0]["uptime_s"] == 7380
+        # pós factory-reset a caixa REINICIOU: o uptime reportado é
+        # pequeno (zera no boot, como no ACOS real)
+        assert samples[0]["uptime_s"] < 3600
         assert samples[0]["serial"] == "A10TH-TEST-0001"
     finally:
         axapi.stop()

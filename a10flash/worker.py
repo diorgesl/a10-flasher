@@ -359,9 +359,10 @@ class FlashWorker:
 
             order = res_cfg.get("order", "after_upgrade")
             if need_upgrade and order == "before_upgrade":
+                t_reset = time.time()
                 self._factory_reset(cli)
                 cli = self._wait_and_login()
-                self._wait_ready(cli)
+                cli = self._wait_real_reboot(cli, since=t_reset)
                 version = cli.get_version()
 
             if need_upgrade:
@@ -391,9 +392,10 @@ class FlashWorker:
                     self.device, f"Firmware atualizado: ACOS {version}")
 
             if res_cfg.get("enabled", True):
+                t_reset = time.time()
                 self._factory_reset(cli)
                 cli = self._wait_and_login()
-                self._wait_ready(cli)
+                cli = self._wait_real_reboot(cli, since=t_reset)
                 version = cli.get_version()
                 self.notifier.ok(
                     self.device,
@@ -534,6 +536,54 @@ class FlashWorker:
                 self.device,
                 "Caixa não saiu do LOADING no tempo — seguindo mesmo assim")
         return ready
+
+    def _wait_real_reboot(self, cli, since, timeout=None):
+        """Confirma que a caixa REALMENTE reiniciou após o factory reset.
+
+        O erase pode levar dezenas de segundos até derrubar o console —
+        nesse meio o login "volta" na SESSÃO ANTIGA (prompt vivo) e o
+        ciclo seguia achando que a caixa já tinha reiniciado, quebrando
+        no show version com a tela de boot. O uptime do show version
+        revela: pós-reboot ele é sempre MENOR que o tempo desde o
+        comando de reset (a caixa não pode ter bootado antes dele). Se
+        a sessão cair no meio (reboot pegando), espera voltar e reloga.
+        """
+        timeout = timeout or int(self.cfg.get("upgrade", {}).get("boot_wait", 600))
+        deadline = time.time() + timeout
+        self._wait_ready(cli, timeout=timeout)
+        last_report = 0
+        while time.time() < deadline:
+            try:
+                out = cli.cmd("show version", timeout=30)
+            except (ConsoleError, A10Error):
+                # console caiu (reboot em curso): espera voltar e reloga
+                self.notifier.info(
+                    self.device,
+                    "Console caiu (reboot em curso) — aguardando voltar...")
+                try:
+                    cli.close()
+                except Exception:
+                    pass
+                rest = max(1, int(deadline - time.time()))
+                cli = self._wait_and_login(timeout=rest)
+                self._wait_ready(cli,
+                                 timeout=max(1, int(deadline - time.time())))
+                continue
+            up = parse_uptime(out)
+            elapsed = int(time.time() - since)
+            if up is not None and up <= elapsed:
+                return cli   # uptime < tempo desde o reset = reboot REAL
+            now = time.time()
+            if now - last_report >= 30:
+                last_report = now
+                self.notifier.info(
+                    self.device,
+                    "Sessão antiga (uptime não confirma o reboot) — "
+                    "aguardando a caixa reiniciar de fato...")
+            time.sleep(5)
+        raise FlashError(
+            "caixa não reiniciou após o factory reset no tempo limite — "
+            "intervenção manual necessária")
 
     # ---------------------------------------------------------- upgrade
     def _ensure_mgmt_ip(self, cli, wait=40):

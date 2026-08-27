@@ -20,7 +20,8 @@ class FakeA10:
                  serial="A10TH-TEST-0001", ask_reboot=False,
                  confirm_style="yn", loading_seconds=0,
                  drop_session_once=False, drop_to="login",
-                 start_at_password=False, uptime_s=7380):
+                 start_at_password=False, uptime_s=7380,
+                 reboot_pending_delay=0.0):
         master, slave = pty.openpty()
         self._master = master
         self._slave = slave   # guardado para simular desconexão (unplug)
@@ -56,6 +57,12 @@ class FakeA10:
         self.start_at_password = start_at_password
         # uptime reportado no show version (modo teste)
         self.uptime_s = uptime_s
+        self._booted_at = time.time()   # uptime zera a cada reboot
+        # reboot ATRASADO (visto em bancada: o erase demora dezenas de
+        # segundos até derrubar o console) — durante a espera a sessão
+        # antiga continua VIVA e respondendo, como o hardware real
+        self.reboot_pending_delay = reboot_pending_delay
+        self._reboot_at = None
         self.commands = []
         self._ctx = "priv"          # priv | config | if
         if start_logged_in:
@@ -144,7 +151,7 @@ class FakeA10:
         return line.strip().lower() in ("n", "no")
 
     def _uptime_line(self):
-        s = self.uptime_s
+        s = self.uptime_s + int(time.time() - self._booted_at)
         d, s = divmod(s, 86400)
         h, s = divmod(s, 3600)
         m = s // 60
@@ -194,6 +201,8 @@ class FakeA10:
         time.sleep(self.reboot_delay)
         for slot, ver in (self.next_versions or {}).items():
             self.versions[slot] = ver
+        self.uptime_s = 0               # uptime zera no boot (como o real)
+        self._booted_at = time.time()
         self._ctx = "priv"
         # pós-reboot a caixa inicia em modo LOADING (sistema subindo)
         if self.loading_seconds > 0:
@@ -207,6 +216,17 @@ class FakeA10:
 
     def _loading(self):
         return time.time() < self._loading_until
+
+    def _start_reboot(self):
+        """Confirmação de reboot: imediato, ou ATRASADO (reboot_pending_delay)
+        — durante a espera a sessão antiga segue respondendo, como o ACOS
+        real com o erase demorando a derrubar o console."""
+        if self.reboot_pending_delay > 0:
+            self._reboot_at = time.time() + self.reboot_pending_delay
+            self._state = "priv"
+            self._send("\r\n" + self._prompt())
+        else:
+            self._do_reboot()
 
     # ------------------------------------------------------- máquina
     def _run(self):
@@ -268,6 +288,13 @@ class FakeA10:
                 continue
             self.commands.append(line)
 
+            # reboot agendado (erase demorando): no momento do reboot a
+            # linha em voo é engolida, como no hardware real
+            if self._reboot_at and time.time() >= self._reboot_at:
+                self._reboot_at = None
+                self._do_reboot()
+                continue
+
             if state == "login_user":
                 if line == self.login_user:
                     self._send("Password: ")
@@ -299,21 +326,29 @@ class FakeA10:
                 self._state = "priv"
             elif state == "confirm_reboot":
                 if self._is_yes(line):
-                    self._do_reboot()
+                    self._start_reboot()
             elif state == "confirm_upgrade_reboot":
                 self.upgrade_reboot_answered = line
                 if self._is_yes(line):
-                    self._do_reboot()          # caixa reinicia sozinha
+                    self._start_reboot()        # caixa reinicia sozinha
                 else:
                     self._send("\r\n" + self._prompt())
                     self._state = "priv"
             elif state == "confirm_reset":
                 if self._is_yes(line):
-                    self._do_reboot()
+                    self._start_reboot()
             elif state == "priv":
                 self._handle_priv(line)
 
     def _handle_priv(self, line):
+        # reboot ATRASADO: durante a janela de espera o console responde
+        # normalmente (sessão antiga viva), mas o show version recebe a
+        # tela de boot como resposta — visto em bancada: o prompt nunca
+        # volta e o cmd estoura no timeout com o banner de boot
+        if self._reboot_at is not None and line.startswith("show version"):
+            self._reboot_at = None
+            self._do_reboot()
+            return
         if self._loading():
             # sistema ainda subindo: comandos não funcionam (como o real)
             if line.startswith("show"):
