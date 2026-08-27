@@ -78,7 +78,7 @@ class FlashWorker:
             self.on_event(self.device, stage, detail)
         if self.bus:
             self.bus.publish({"type": "stage", "device": self.device,
-                              "stage": stage, "detail": detail})
+                              "stage": detail or stage, "detail": detail})
         self._check_commands()
 
     def _resolve(self):
@@ -152,7 +152,6 @@ class FlashWorker:
                     f"({result['summary']})",
                 )
                 self._publish_status(result=result)
-                self._publish_device_result(result)
                 return result
             except FlashAbort as exc:
                 self._state = "aborted"
@@ -425,6 +424,12 @@ class FlashWorker:
                     f"| factory reset: {'sim' if res_cfg.get('enabled', True) else 'não'}"
                 ),
             }
+            # o registro sai ANTES do modo teste: a caixa fica horas
+            # conectada na bancada e o portal precisa do device_result
+            # JÁ nesse ponto — segurar a publicação até o unplug deixava
+            # o DB sem o equipamento durante todo o monitoramento (e
+            # perdia o registro se o modo fosse abortado).
+            self._publish_device_result(result)
             # MODO TESTE: a caixa atualizada fica conectada na serial
             # coletando uptime até ser desconectada (ou abort do portal)
             samples = self._test_mode(cli, device_info.get("serial"))

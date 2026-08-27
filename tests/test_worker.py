@@ -391,18 +391,29 @@ def test_upgrade_axapi_sem_confirmacao_segue_aguardando():
             pass
 
     axapi = FakeAxapiServer(sw_version="4.1.4")
+    orig_exists = os.path.exists
+
+    def _unplug_after_test_mode(dev, stage, detail):
+        # o pty do fake não "despluga" de verdade no macOS — patch no
+        # exists para o modo teste encerrar (mesmo padrão do run_worker)
+        if detail == "test_mode":
+            os.path.exists = lambda p: (False if p == fake.port
+                                        else orig_exists(p))
+
     try:
         cfg = make_cfg(device={"reboot_after_upgrade": True})
         notifier = Notifier(log_file=None)
         power = PowerController(cfg.get("power", {}), notifier)
         worker = FlashWorker(cfg, "fake-a10", fake.port, notifier, power,
                              axapi_cls=AxapiSemConfirmacao,
-                             axapi_base_override=axapi.base_url())
+                             axapi_base_override=axapi.base_url(),
+                             on_event=_unplug_after_test_mode)
         result = worker.run()
         assert result["status"] == "success", result
         assert result["upgraded"] is True
         assert result["version"] == "4.1.4"
     finally:
+        os.path.exists = orig_exists
         axapi.stop()
         fake.close()
 
@@ -954,12 +965,22 @@ def test_device_result_publicado_no_bus():
     axapi = FakeAxapiServer(sw_version="4.1.4")
     bus = EventBus()
     sid, q = bus.subscribe()
+    orig_exists = os.path.exists
+
+    def _unplug_after_test_mode(dev, stage, detail):
+        # o pty do fake não "despluga" de verdade no macOS — patch no
+        # exists para o modo teste encerrar (mesmo padrão do run_worker)
+        if detail == "test_mode":
+            os.path.exists = lambda p: (False if p == fake.port
+                                        else orig_exists(p))
+
     try:
         cfg = make_cfg()
         notifier = Notifier(log_file=None)
         power = PowerController(cfg.get("power", {}), notifier)
         worker = FlashWorker(cfg, "fake-a10", fake.port, notifier, power,
-                             axapi_base_override=axapi.base_url(), bus=bus)
+                             axapi_base_override=axapi.base_url(), bus=bus,
+                             on_event=_unplug_after_test_mode)
         result = worker.run()
         assert result["status"] == "success", result
         found = None
@@ -977,6 +998,63 @@ def test_device_result_publicado_no_bus():
         assert found["version"] == "4.1.4"
         assert found["license_info"] != ""
     finally:
+        os.path.exists = orig_exists
+        bus.unsubscribe(sid)
+        axapi.stop()
+        fake.close()
+
+
+def test_device_result_publicado_antes_do_modo_teste():
+    """O registro (device_result) sai ANTES do modo teste começar — a
+    caixa fica registrada no portal mesmo que continue conectada na
+    bancada por horas (antes o ciclo só publicava ao FINAL do modo
+    teste, no unplug — "Registro: ..." no log sem nada no DB)."""
+    from a10flash.bus import EventBus
+    from a10flash.notify import Notifier
+    from a10flash.power import PowerController
+
+    fake = FakeA10(version="4.1.4", booted="primary", mgmt_ip="10.0.0.10",
+                   reboot_delay=0.5)
+    axapi = FakeAxapiServer(sw_version="4.1.4")
+    bus = EventBus()
+    sid, q = bus.subscribe()
+    orig_exists = os.path.exists
+
+    def _port_gone(p):
+        return False if p == fake.port else orig_exists(p)
+
+    try:
+        cfg = make_cfg()
+        notifier = Notifier(log_file=None)
+        power = PowerController(cfg.get("power", {}), notifier)
+
+        def _on_event(dev, stage, detail):
+            if detail == "test_mode":
+                os.path.exists = _port_gone  # modo teste encerra no 1º loop
+
+        worker = FlashWorker(cfg, "fake-a10", fake.port, notifier, power,
+                             axapi_base_override=axapi.base_url(), bus=bus,
+                             on_event=_on_event)
+        result = worker.run()
+        assert result["status"] == "success", result
+        got = []
+        while True:
+            try:
+                ev = q.get(timeout=0.5)
+            except Exception:
+                break
+            if ev.get("type") == "device_result":
+                got.append(ev)
+            elif ev.get("type") == "stage" and ev.get("detail") == "test_mode":
+                got.append(ev)
+        dr = next(e for e in got if e.get("type") == "device_result")
+        st = next(e for e in got if e.get("type") == "stage")
+        assert dr is not None, "device_result não publicado"
+        assert dr["ts"] < st["ts"], \
+            "device_result deve sair ANTES do modo teste (caixa conectada " \
+            "já precisa estar registrada)"
+    finally:
+        os.path.exists = orig_exists
         bus.unsubscribe(sid)
         axapi.stop()
         fake.close()
@@ -1028,12 +1106,22 @@ def test_upgraded_true_sem_upgrade_real():
     axapi = FakeAxapiServer(sw_version="4.1.4")
     bus = EventBus()
     sid, q = bus.subscribe()
+    orig_exists = os.path.exists
+
+    def _unplug_after_test_mode(dev, stage, detail):
+        # o pty do fake não "despluga" de verdade no macOS — patch no
+        # exists para o modo teste encerrar (mesmo padrão do run_worker)
+        if detail == "test_mode":
+            os.path.exists = lambda p: (False if p == fake.port
+                                        else orig_exists(p))
+
     try:
         cfg = make_cfg()
         notifier = Notifier(log_file=None)
         power = PowerController(cfg.get("power", {}), notifier)
         worker = FlashWorker(cfg, "fake-a10", fake.port, notifier, power,
-                             axapi_base_override=axapi.base_url(), bus=bus)
+                             axapi_base_override=axapi.base_url(), bus=bus,
+                             on_event=_unplug_after_test_mode)
         result = worker.run()
         assert result["status"] == "success", result
         assert result["upgraded"] is False  # ciclo sem upgrade
@@ -1048,6 +1136,7 @@ def test_upgraded_true_sem_upgrade_real():
         assert found is not None, "device_result não publicado"
         assert found["upgraded"] is True  # mas está NA VERSÃO CORRETA
     finally:
+        os.path.exists = orig_exists
         bus.unsubscribe(sid)
         axapi.stop()
         fake.close()
