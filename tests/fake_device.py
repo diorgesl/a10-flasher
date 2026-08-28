@@ -64,6 +64,8 @@ class FakeA10:
         self.reboot_pending_delay = reboot_pending_delay
         self._reboot_at = None
         self.commands = []
+        self.interfaces_count = 20      # portas ethernet 1..N no brief
+        self.bad_config_lines = set()   # substrings -> '% Invalid input'
         self._ctx = "priv"          # priv | config | if
         if start_logged_in:
             self._state = "priv"
@@ -121,6 +123,13 @@ class FakeA10:
             os.close(self._slave)
         except OSError:
             pass
+
+    def start(self):
+        """Garante o thread do console rodando (no-op: o __init__ já
+        inicia; a chamada explícita é por compatibilidade com os testes)."""
+        if not self._thread.is_alive() and not self._stop:
+            self._thread = threading.Thread(target=self._run, daemon=True)
+            self._thread.start()
 
     def close(self):
         self._stop = True
@@ -195,6 +204,20 @@ class FakeA10:
                 f"  Description: Management port\r\n"
                 f"  IP Address: {self.mgmt_ip} /{self.prefix}\r\n"
                 f"  Link: up\r\n\r\n")
+
+    def _interfaces_brief(self):
+        lines = ["\r\nPort              Link  State    Speed    Duplex"]
+        for i in range(1, self.interfaces_count + 1):
+            lines.append(f"ethernet {i}         Up    Forward  10Gbps   full")
+        return "\r\n".join(lines) + "\r\n"
+
+    def _reject_bad_config(self, line):
+        """No contexto de config, linhas 'ruins' recebem o erro do ACOS."""
+        if any(bad in line for bad in self.bad_config_lines):
+            self._send("\r\n% Invalid input detected at '^' marker.\r\n"
+                       + self._prompt())
+            return True
+        return False
 
     def _do_reboot(self):
         self._send("\r\nSystem is rebooting...\r\n")
@@ -368,9 +391,11 @@ class FakeA10:
         elif line == "show bootimage":
             self._send(self._bootimage_block() + self._prompt())
         elif line in ("show interfaces management",
-                      "show running-config interface management",
-                      "show interfaces brief"):
+                      "show running-config interface management"):
             self._send(self._mgmt_block() + self._prompt())
+        elif line == "show interfaces brief":
+            self._send(self._mgmt_block() + self._interfaces_brief()
+                       + self._prompt())
         elif line == "write memory":
             self._send("\r\nConfiguration saved.\r\n" + self._prompt())
         elif line == "configure terminal":
@@ -379,6 +404,8 @@ class FakeA10:
         elif line == "interface management":
             self._ctx = "if"
             self._send("\r\n" + self._prompt())
+        elif self._ctx in ("config", "if") and self._reject_bad_config(line):
+            pass
         elif line.startswith("ip address "):
             parts = line.split()
             # ip address 10.1.2.3 /24

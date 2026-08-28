@@ -97,3 +97,39 @@ def test_default_skip_map_cobre_4430_e_7650():
     assert any(re.search(p, "TH4430S") for p in pats)
     assert any(re.search(p, "TH7650S") for p in pats)
     assert all(e["skip"] == 4 for e in DEFAULT_SKIP_MAP)
+
+
+"""Aplicação de config via serial (precisa do FakeA10/pty)."""
+from a10flash.a10_cli import SerialA10  # noqa: E402
+from tests.fake_device import FakeA10  # noqa: E402
+
+
+def test_apply_config_lines_ok_e_rejeitada():
+    fake = FakeA10()
+    fake.start()
+    try:
+        cli = SerialA10(port=fake.port)
+        cli.open_and_login()
+        assert cli.apply_config_lines(
+            ["interface ethernet 15", "ip nat inside"]) == []
+        # linha rejeitada volta na lista
+        fake.bad_config_lines = {"ip nat outside"}
+        assert cli.apply_config_lines(
+            ["interface ethernet 16", "ip nat outside"]) == \
+            ["ip nat outside"]
+    finally:
+        fake.close()
+
+
+def test_fake_brief_lista_interfaces():
+    fake = FakeA10()
+    fake.interfaces_count = 9
+    fake.start()
+    try:
+        cli = SerialA10(port=fake.port)
+        cli.open_and_login()
+        out = cli.cmd("show interfaces brief")
+        assert "ethernet 9" in out
+        assert "ethernet 10" not in out
+    finally:
+        fake.close()

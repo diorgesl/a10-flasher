@@ -538,6 +538,32 @@ class SerialA10:
     def write_memory(self, timeout=30):
         self.cmd("write memory", timeout=timeout)
 
+    _CONFIG_ERROR_MARKERS = (
+        "% invalid input", "invalid input detected", "syntax error",
+        "command rejected", "unrecognized command",
+    )
+
+    @classmethod
+    def config_line_failed(cls, line, output):
+        """A saída de um comando de config contém erro do ACOS para a
+        linha? (marcadores de erro no eco — `%`/`^` do ACOS)"""
+        low = (output or "").lower()
+        return any(marker in low for marker in cls._CONFIG_ERROR_MARKERS)
+
+    def apply_config_lines(self, lines, timeout=30):
+        """Aplica linhas de config via `configure terminal`, uma a uma,
+        verificando erro no eco de cada uma. Retorna a lista de linhas
+        rejeitadas (vazia = tudo aplicado). NÃO dá write memory — o
+        chamador decide (só grava se nada falhou)."""
+        self.cmd("configure terminal", timeout=timeout)
+        rejected = []
+        for line in lines:
+            out = self.cmd(line, timeout=timeout)
+            if self.config_line_failed(line, out):
+                rejected.append(line)
+        self.cmd("end", timeout=timeout)
+        return rejected
+
     def upgrade_hd(self, url, slot="pri", use_mgmt_port=True, timeout=1800,
                    reboot_after_upgrade=False):
         """Upgrade via CLI serial — MESMO comando do fluxo manual:
