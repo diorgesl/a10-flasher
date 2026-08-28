@@ -303,6 +303,10 @@ class BurninController:
             verdict, reason = "aborted", "parado pelo operador"
         except BurninConfigError as exc:
             verdict, reason = "aborted", f"config LSN: {exc}"
+        except TRexError as exc:
+            # falha de infra na SUBIDA (daemon/profile) — nunca culpa a caixa
+            # (spec 4: daemon que não sobe -> aborted, erase, volta ao modo teste)
+            verdict, reason = "aborted", f"TRex irrecuperável: {exc}"
         except BurninAbort:
             self._publish_result(run_id, started, duration_h, cps,
                                  "aborted", "abort do portal", samples,

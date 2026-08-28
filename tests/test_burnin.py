@@ -417,3 +417,19 @@ def test_burnin_overrides_do_comando(monkeypatch):
     assert trex.cps_seen == 2000
     started = _events(bus, "burnin_started")
     assert started[0]["duration_h"] == 1
+
+
+def test_burnin_start_daemon_falha_aborta(monkeypatch):
+    monkeypatch.setattr(os.path, "exists", lambda p: True)
+    clock = FakeClock()
+    cli = StubCli()
+    bus = FakeBus()
+    trex = FakeTRexClient()
+    trex.daemon_fail = True
+    erased = []
+    ctrl = make_ctrl(clock=clock, cli=cli, bus=bus, trex=trex,
+                     do_erase=lambda: erased.append("erase") or cli)
+    res = ctrl.run()
+    assert res["verdict"] == "aborted"
+    assert "TRex" in res["reason"]
+    assert erased == ["erase"]
