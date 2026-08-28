@@ -135,8 +135,9 @@ payload do comando, se enviados) e **volta ao `_test_mode`** (loop). O
   e 48 portas (e outros tamanhos); nada de porta hardcoded.
   1. parseia `show interfaces brief` (dual-formato, como os parsers
      existentes: 4.x/5.x);
-  2. ignora o **bloco traseiro de portas 40G+** (nos modelos grandes as
-     últimas portas são 40G/100G e não servem para o TRex de 10G);
+  2. ignora o **bloco traseiro de portas 40G+** — ex.: 4430/4440/5430 têm
+     4 portas de 40G no final (ex.: eth17-20 num 4430) que precisam ser
+     descontadas porque o TRex da bancada usa placa de 10G;
   3. seleciona as **duas últimas portas** restantes: inside = penúltima,
      outside = última;
   4. verifica que as duas são 10G — se não forem (hardware fora do padrão
