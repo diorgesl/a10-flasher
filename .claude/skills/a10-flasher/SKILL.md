@@ -22,7 +22,7 @@ acompanhamento e registro dos equipamentos.
   no config) — agente faz git fetch/reset --hard e SAI; o systemd
   (`Restart=always`) sobe com o código novo. NUNCA atualiza com ciclo
   ativo (`monitor.has_active_cycle()`); bootstrap inicial (clone do repo
-  + config.yaml) é manual, uma vez.
+  - config.yaml) é manual, uma vez.
 - Cópia do usuário: `~/a10-flasher` em ServerLIVE (`willian@ServerLIVE`),
   roda com `--config ../config.yaml` (config fora do projeto).
 - Comunicação em pt-BR; código Python; token único no `.env` do docker e
@@ -142,7 +142,7 @@ acompanhamento e registro dos equipamentos.
 
 - Worker: `_collect_device_info(cli)` — serial (`get_serial` do show
   version) + saídas brutas de `show version`/`show license-info`/
-  `show environment`/`show interfaces`; **cada leitura tolerante a
+  `show environment`/`show interfaces brief`; **cada leitura tolerante a
   falha** (não quebra o ciclo). Coluna `interfaces` no SQLite com
   migração `ALTER TABLE` para DBs antigos.
 - `_publish_device_result` (só no sucesso) → bus → agente `_forward`

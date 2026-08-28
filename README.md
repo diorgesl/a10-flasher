@@ -48,14 +48,14 @@ nunca interrompem um upgrade no meio.
 
 Comandos usados no equipamento (padrão ACOS, validados contra documentação oficial):
 
-| Ação | Comando |
-|---|---|
-| Login | `admin` / `a10` (padrão de fábrica) + `enable` |
-| Versão | `show version`, `show bootimage` |
-| IP de gerência | `show interfaces management` |
+| Ação                       | Comando                                                                                     |
+| -------------------------- | ------------------------------------------------------------------------------------------- |
+| Login                      | `admin` / `a10` (padrão de fábrica) + `enable`                                              |
+| Versão                     | `show version`, `show bootimage`                                                            |
+| IP de gerência             | `show interfaces management`                                                                |
 | IP estático (se não tiver) | `configure terminal` → `interface management` → `ip address X /24` → `ip default-gateway G` |
-| Factory reset | `erase` + `reboot` (ou `system-reset`) |
-| Salvar | `write memory` |
+| Factory reset              | `erase` + `reboot` (ou `system-reset`)                                                      |
+| Salvar                     | `write memory`                                                                              |
 
 O upgrade em si usa a **AXAPI REST** (`https://<ip-gerencia>/axapi/v3/`), conforme o
 fluxo oficial da A10 (projeto de referência: `ACOS-Upgrade`, da própria A10).
@@ -89,13 +89,13 @@ Edite `config.yaml`. **Itens obrigatórios antes de usar de verdade:**
 
 ```yaml
 device:
-  target_version: "4.1.4"      # versão ACOS alvo
+  target_version: "4.1.4" # versão ACOS alvo
 
   # firmware POR FAMÍLIA DE HARDWARE (padrão A10: mesma versão base,
   # imagem diferente por família — 4.1.4-GR1-P14 variantes A/F/n)
   firmware_map:
     models_fta:
-      match: "4430|4440"        # regex contra o modelo (show version)
+      match: "4430|4440" # regex contra o modelo (show version)
       url: "sftp://user:pass@SRV/fw/ACOS_4.1.4-GR1-P14_A....upg"
     models_ftav2:
       match: "3430|5330"
@@ -107,15 +107,15 @@ device:
   firmware_url: "sftp://usuario:senha@IP_SERVIDOR/caminho/ACOS_4.1.4.upg"
   # ^ fallback quando não há firmware_map ou nenhum grupo casa
 
-portal_server:                 # na máquina DO SERVIDOR
+portal_server: # na máquina DO SERVIDOR
   host: 0.0.0.0
   port: 8080
-  token: "defina-um-token"     # mesmo token nos agentes
+  token: "defina-um-token" # mesmo token nos agentes
 
-portal_agent:                  # no PC DO LABORATÓRIO
+portal_agent: # no PC DO LABORATÓRIO
   url: "ws://IP_DO_SERVIDOR:8080/agent"
   agent_id: "lab-1"
-  token: "defina-um-token"     # mesmo token do portal_server
+  token: "defina-um-token" # mesmo token do portal_server
 ```
 
 - **Serial**: `baudrate: 9600` (padrão dos Thunder; autodetect tenta os
@@ -205,9 +205,9 @@ Com o portal no ar, o **laboratório** conecta pelo domínio público:
 
 ```yaml
 portal_agent:
-  url: "wss://a10.app.diorg.es/agent"   # wss (TLS)
+  url: "wss://a10.app.diorg.es/agent" # wss (TLS)
   agent_id: "lab-1"
-  token: "um-token-forte"               # mesmo token do PORTAL_TOKEN
+  token: "um-token-forte" # mesmo token do PORTAL_TOKEN
 ```
 
 > O portal lê `PORTAL_TOKEN`, `PORTAL_HOST` e `PORTAL_PORT` de variáveis de
@@ -316,4 +316,3 @@ a10flash/
   web/index.html   # dashboard (single-page, sem CDN)
 tests/             # A10 fake (pty) + AXAPI fake + testes + demo_lab.py
 ```
-

@@ -1110,8 +1110,8 @@ class FlashWorker:
              "version_output")
         _try("license-info", cli.get_license_info, "license_info")
         _try("environment", cli.get_environment, "environment")
-        _try("show interfaces",
-             lambda timeout: cli.cmd("show interfaces", timeout=timeout),
+        _try("show interfaces brief",
+             lambda timeout: cli.cmd("show interfaces brief", timeout=timeout),
              "interfaces")
         return info
 

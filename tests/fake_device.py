@@ -369,7 +369,7 @@ class FakeA10:
             self._send(self._bootimage_block() + self._prompt())
         elif line in ("show interfaces management",
                       "show running-config interface management",
-                      "show interfaces"):
+                      "show interfaces brief"):
             self._send(self._mgmt_block() + self._prompt())
         elif line == "write memory":
             self._send("\r\nConfiguration saved.\r\n" + self._prompt())
