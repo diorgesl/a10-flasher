@@ -152,7 +152,8 @@ class TRexClient:
 
     def stats(self):
         """Taxas desde a última chamada: tx/rx bps e pps, sessões ativas
-        e erros acumulados no intervalo. Primeira chamada = zeros."""
+        e erros acumulados desde o início do tráfego. Primeira chamada
+        = zeros."""
         now = time.monotonic()
         raw = self._raw_stats()
         if self._last is None:

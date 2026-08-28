@@ -1,11 +1,14 @@
 """Testes do TRexClient (sem TRex real — daemon e client injetados)."""
 
-import subprocess
+import os
+import sys
 
 import pytest
 
-import a10flash.trex_client as tc
-from a10flash.trex_client import TRexClient, TRexError
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import a10flash.trex_client as tc  # noqa: E402
+from a10flash.trex_client import TRexClient, TRexError  # noqa: E402
 
 
 class FakeAstfClient:
@@ -113,6 +116,7 @@ def test_start_daemon_existing_is_not_ours(monkeypatch):
 
 def test_start_daemon_timeout(monkeypatch):
     monkeypatch.setattr(tc, "_port_open", lambda port, timeout=2.0: False)
+    monkeypatch.setattr(tc.os.path, "exists", lambda p: True)  # binário "existe"
     popen = FakePopen()
     c = TRexClient("/opt/trex/v3.08", popen=popen, sleep=lambda s: None)
     with pytest.raises(TRexError):
@@ -183,6 +187,31 @@ def test_stats_rates_from_delta(monkeypatch):
     assert st["rx_pps"] == 80
     assert st["active_sessions"] == 9
     assert st["errors"] == 3
+
+
+def test_stats_errors_cumulative(monkeypatch):
+    fake = FakeAstfClient()
+    fake.frames = [
+        _frame(tx_bytes=0, rx_bytes=0, tx_pkts=0, rx_pkts=0),
+        _frame(tx_bytes=1000, rx_bytes=0, tx_pkts=10, rx_pkts=0, errs=3),
+        _frame(tx_bytes=2000, rx_bytes=0, tx_pkts=20, rx_pkts=0, errs=7),
+    ]
+    c = TRexClient("/opt/trex/v3.08", astf_factory=lambda: fake)
+    now = [1000.0]
+
+    class Clock:
+        @staticmethod
+        def monotonic():
+            return now[0]
+
+    monkeypatch.setattr(tc.time, "monotonic", Clock.monotonic)
+    c.stats()
+    now[0] += 10.0
+    st = c.stats()
+    assert st["errors"] == 3       # acumulado, não delta
+    now[0] += 10.0
+    st = c.stats()
+    assert st["errors"] == 7       # segue cumulativo
 
 
 def test_stats_raises_trex_error():
