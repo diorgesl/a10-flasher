@@ -102,12 +102,15 @@ class FakeTRexClient:
 ```python
 """Testes do TRexClient (sem TRex real — daemon e client injetados)."""
 
-import subprocess
+import os
+import sys
 
 import pytest
 
-import a10flash.trex_client as tc
-from a10flash.trex_client import TRexClient, TRexError
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import a10flash.trex_client as tc  # noqa: E402
+from a10flash.trex_client import TRexClient, TRexError  # noqa: E402
 
 
 class FakeAstfClient:
@@ -516,7 +519,7 @@ class TRexClient:
 - [ ] **Step 4: Rodar os testes**
 
 Run: `pytest tests/test_trex_client.py -v`
-Expected: PASS (11 testes)
+Expected: PASS (9 testes — o arquivo tem 9 funções)
 
 - [ ] **Step 5: Commit**
 
@@ -549,9 +552,14 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 ```python
 """Testes do burn-in: regra de portas e template LSN (helpers puros)."""
 
+import os
+import sys
+
 import pytest
 
-from a10flash.burnin import (DEFAULT_SKIP_MAP, pick_lsn_ports,
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from a10flash.burnin import (DEFAULT_SKIP_MAP, pick_lsn_ports,  # noqa: E402
                              render_lsn_template)
 
 
