@@ -133,3 +133,287 @@ def test_fake_brief_lista_interfaces():
         assert "ethernet 10" not in out
     finally:
         fake.close()
+
+
+"""BurninController: loop com clock falso, cli stub e trex fake."""
+import os
+import time
+
+import pytest
+
+from a10flash.burnin import (BurninAbort, BurninController, BurninStop,
+                             pick_lsn_ports, render_lsn_template)
+from a10flash.trex_client import TRexError
+from tests.fake_trex import FakeTRexClient
+
+
+class StubCli:
+    """cli serial stub: cmd registra chamadas; uptime controlável."""
+
+    def __init__(self):
+        self.cmds = []
+        self.uptime_s = 100
+        self.reject = []
+        self.written = []
+        self.login_calls = 0
+
+    def cmd(self, command, timeout=30):
+        self.cmds.append(command)
+        if command == "show interfaces brief":
+            return "\r\n".join(
+                ["Port  Link"] +
+                [f"ethernet {i}         Up" for i in range(1, 21)])
+        if command == "show version":
+            return f"Up Time: {self.uptime_s}s"
+        if command == "configure terminal" or command == "end":
+            return "ok"
+        if self.reject and command in self.reject:
+            return "% Invalid input detected at '^' marker."
+        return "ok"
+
+    def apply_config_lines(self, lines, timeout=30):
+        self.cmds.append(("apply_config_lines", lines))
+        return [ln.strip() for ln in lines if ln.strip() in self.reject]
+
+    def write_memory(self, timeout=30):
+        self.written.append("write memory")
+
+    def open_and_login(self, login_timeout=20, baud_autodetect=True):
+        self.login_calls += 1
+        self.cmds.append("open_and_login")
+
+
+class FakeClock:
+    def __init__(self, start=1000.0):
+        self.now = start
+
+    def time(self):
+        return self.now
+
+    def sleep(self, s):
+        self.now += s
+
+
+class FakeBus:
+    def __init__(self):
+        self.events = []
+
+    def publish(self, event):
+        self.events.append(dict(event))
+
+
+class FakeNotifier:
+    def __init__(self):
+        self.log = []
+
+    def info(self, device, msg):
+        self.log.append(("info", msg))
+
+    def warn(self, device, msg):
+        self.log.append(("warn", msg))
+
+    def ok(self, device, msg):
+        self.log.append(("ok", msg))
+
+    def error(self, device, msg):
+        self.log.append(("error", msg))
+
+
+def make_ctrl(clock=None, trex=None, cli=None, mailbox=None, do_erase=None,
+              cps_override=None, duration_override=None, bus=None,
+              **cfg_over):
+    cfg = {"device": {"test_interval_h": 1},
+           "trex": {"path": "/opt/trex/v3.08", "cps": 1000,
+                    "duration_h": 24, "sample_interval_s": 60,
+                    "lsn_config": "trex/config_lsn.conf"}}
+    cfg["trex"].update(cfg_over)
+    return BurninController(
+        cli=cli or StubCli(), serial="SER-1",
+        device_info={"model": "TH930S"},
+        trex=trex or FakeTRexClient(), cfg=cfg, bus=bus or FakeBus(),
+        notifier=FakeNotifier(), device="dev-a", port_path="/dev/ttyUSB0",
+        mailbox=mailbox, do_erase=do_erase, cps_override=cps_override,
+        duration_override=duration_override,
+        clock=clock or FakeClock())
+
+
+def _events(bus, etype):
+    return [e for e in bus.events if e.get("type") == etype]
+
+
+def test_burnin_pass_24h(monkeypatch):
+    monkeypatch.setattr(os.path, "exists", lambda p: True)
+    clock = FakeClock()
+    cli = StubCli()
+    bus = FakeBus()
+    erased = []
+    ctrl = make_ctrl(clock=clock, cli=cli, bus=bus,
+                     do_erase=lambda: erased.append("erase") or cli)
+    res = ctrl.run()
+    assert res["verdict"] == "pass"
+    assert "24h" in res["reason"]
+    started = _events(bus, "burnin_started")
+    assert started and started[0]["cps"] == 1000
+    result = _events(bus, "burnin_result")
+    assert result and result[0]["verdict"] == "pass"
+    samples = _events(bus, "burnin_sample")
+    assert len(samples) == 24 * 3600 / 60   # 1440 amostras
+    assert erased == ["erase"]
+    assert "write memory" in cli.written
+
+
+def test_burnin_reboot_midtest_fail(monkeypatch):
+    monkeypatch.setattr(os.path, "exists", lambda p: True)
+
+    class RebootCli(StubCli):
+        """uptime desce entre leituras (caixa reiniciou sob carga)."""
+
+        def __init__(self):
+            super().__init__()
+            self._reads = 0
+
+        def cmd(self, command, timeout=30):
+            if command == "show version":
+                self._reads += 1
+                if self._reads >= 3:
+                    return "Up Time: 5s"   # reiniciou
+                return "Up Time: 5000s"
+            return super().cmd(command, timeout=timeout)
+
+    clock = FakeClock()
+    cli = RebootCli()
+    bus = FakeBus()
+    erased = []
+    ctrl = make_ctrl(clock=clock, cli=cli, bus=bus,
+                     do_erase=lambda: erased.append("erase") or cli)
+    res = ctrl.run()
+    assert res["verdict"] == "fail"
+    assert "reiniciou" in res["reason"]
+    assert erased == ["erase"]
+
+
+def test_burnin_unplug_interrupted(monkeypatch):
+    monkeypatch.setattr(os.path, "exists", lambda p: False)
+    clock = FakeClock()
+    cli = StubCli()
+    bus = FakeBus()
+    erased = []
+    ctrl = make_ctrl(clock=clock, cli=cli, bus=bus,
+                     do_erase=lambda: erased.append("erase") or cli)
+    res = ctrl.run()
+    assert res["verdict"] == "interrupted"
+    assert erased == []
+
+
+def test_burnin_stop_aborted_com_erase(monkeypatch):
+    monkeypatch.setattr(os.path, "exists", lambda p: True)
+
+    class Mailbox:
+        def __init__(self):
+            self.cmds = [{"command": "burnin_stop", "reason": "chega"}]
+
+        def drain(self):
+            out, self.cmds = self.cmds, []
+            return out
+
+    clock = FakeClock()
+    cli = StubCli()
+    bus = FakeBus()
+    erased = []
+    ctrl = make_ctrl(clock=clock, cli=cli, bus=bus, mailbox=Mailbox(),
+                     do_erase=lambda: erased.append("erase") or cli)
+    res = ctrl.run()
+    assert res["verdict"] == "aborted"
+    assert "parado" in res["reason"]
+    assert erased == ["erase"]
+
+
+def test_burnin_abort_levanta_sem_erase(monkeypatch):
+    monkeypatch.setattr(os.path, "exists", lambda p: True)
+
+    class Mailbox:
+        def drain(self):
+            return [{"command": "abort", "reason": "chega"}]
+
+    clock = FakeClock()
+    cli = StubCli()
+    bus = FakeBus()
+    erased = []
+    ctrl = make_ctrl(clock=clock, cli=cli, bus=bus, mailbox=Mailbox(),
+                     do_erase=lambda: erased.append("erase") or cli)
+    with pytest.raises(BurninAbort):
+        ctrl.run()
+    result = _events(bus, "burnin_result")
+    assert result and result[0]["verdict"] == "aborted"
+    assert erased == []
+
+
+def test_burnin_config_rejeitada_nao_inicia(monkeypatch):
+    monkeypatch.setattr(os.path, "exists", lambda p: True)
+    clock = FakeClock()
+    cli = StubCli()
+    cli.reject = ["ip nat inside"]
+    bus = FakeBus()
+    trex = FakeTRexClient()
+    erased = []
+    ctrl = make_ctrl(clock=clock, cli=cli, bus=bus, trex=trex,
+                     do_erase=lambda: erased.append("erase") or cli)
+    res = ctrl.run()
+    assert res["verdict"] == "aborted"
+    assert res["config_errors"] == ["ip nat inside"]
+    assert trex.start_traffic_called is False
+    assert "write memory" not in cli.written
+    assert erased == ["erase"]
+
+
+def test_burnin_portas_insuficientes(monkeypatch):
+    monkeypatch.setattr(os.path, "exists", lambda p: True)
+    clock = FakeClock()
+    cli = StubCli()
+    cli.cmd = lambda command, timeout=30: "sem portas"
+    bus = FakeBus()
+    ctrl = make_ctrl(clock=clock, cli=cli, bus=bus)
+    res = ctrl.run()
+    assert res["verdict"] == "aborted"
+    assert "regra de portas" in res["reason"]
+
+
+def test_burnin_trex_infra_aborta_apos_backoff(monkeypatch):
+    monkeypatch.setattr(os.path, "exists", lambda p: True)
+    clock = FakeClock()
+    cli = StubCli()
+    bus = FakeBus()
+    trex = FakeTRexClient()
+    trex.fail_stats = True
+    erased = []
+    ctrl = make_ctrl(clock=clock, cli=cli, bus=bus, trex=trex,
+                     do_erase=lambda: erased.append("erase") or cli)
+    res = ctrl.run()
+    assert res["verdict"] == "aborted"
+    assert "TRex" in res["reason"]
+    assert erased == ["erase"]
+
+
+def test_burnin_publica_uptime_sample_horario(monkeypatch):
+    monkeypatch.setattr(os.path, "exists", lambda p: True)
+    clock = FakeClock()
+    cli = StubCli()
+    bus = FakeBus()
+    ctrl = make_ctrl(clock=clock, cli=cli, bus=bus)
+    ctrl.run()
+    ups = _events(bus, "uptime_sample")
+    assert 0 < len(ups) < 30    # ~24, um por hora (não um por amostra)
+
+
+def test_burnin_overrides_do_comando(monkeypatch):
+    monkeypatch.setattr(os.path, "exists", lambda p: True)
+    clock = FakeClock()
+    cli = StubCli()
+    bus = FakeBus()
+    trex = FakeTRexClient()
+    ctrl = make_ctrl(clock=clock, cli=cli, bus=bus, trex=trex,
+                     cps_override=2000, duration_override=1)
+    ctrl.run()
+    assert trex.cps_seen == 2000
+    started = _events(bus, "burnin_started")
+    assert started[0]["duration_h"] == 1
