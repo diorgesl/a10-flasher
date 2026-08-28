@@ -129,20 +129,26 @@ payload do comando, se enviados) e **volta ao `_test_mode`** (loop). O
   `{OUTSIDE_PORT}`. O bloco `interface ethernet 17-20 enable` do arquivo atual
   sai do template e vira opção de config **`trex.extra_enable_ports`** (lista,
   default vazia) — cada porta da lista gera `interface ethernet N` / `enable`.
-- **Regra das portas** (função pura `pick_lsn_ports(brief) -> (inside,
+- **Regra das portas** (função pura `pick_lsn_ports(model, brief) -> (inside,
   outside)` em `a10flash/burnin.py`): a detecção é **sempre dinâmica**, a
-  partir do `show interfaces brief` da caixa — a bancada tem caixas de 9, 10
-  e 48 portas (e outros tamanhos); nada de porta hardcoded.
-  1. parseia `show interfaces brief` (dual-formato, como os parsers
-     existentes: 4.x/5.x);
-  2. ignora o **bloco traseiro de portas 40G+** — ex.: 4430/4440/5430 têm
-     4 portas de 40G no final (ex.: eth17-20 num 4430) que precisam ser
-     descontadas porque o TRex da bancada usa placa de 10G;
-  3. seleciona as **duas últimas portas** restantes: inside = penúltima,
-     outside = última;
-  4. verifica que as duas são 10G — se não forem (hardware fora do padrão
-     da bancada), erro claro e o burn-in não inicia (falha segura: nunca
-     escolher portas erradas por dedução).
+  partir do modelo (`show version`, já parseado pelo worker) + a contagem de
+  portas do `show interfaces brief` — a bancada tem caixas de 9, 10 e 48
+  portas (e outros tamanhos); nada de porta hardcoded.
+  1. todos os nomes de porta são `ethernet N` — **o brief não distingue 10G
+     de 40G/100G**, e a velocidade dele não é fonte confiável; quem sabe o
+     hardware é o mapa abaixo (conhecimento da bancada, dado em config);
+  2. **tail de alta velocidade por modelo**: os modelos "4xxx" pra cima
+     (4430, 4440, 5430, 6430, 7650, 14045...) têm **sempre 4 portas de
+     40G/100G no final** — descontar 4; caixas menores (9/10 portas)
+     descontam 0. Implementação: lista em config
+     `trex.trailing_highspeed_ports: [{pattern, skip}]`, primeiro match
+     vence, default 0 (override fácil se a bancada mudar);
+  3. conta as portas `ethernet N` do brief (parsers dual-formato 4.x/5.x,
+     como os existentes) → `total`;
+  4. `inside = ethernet (total - skip - 1)`, `outside = ethernet
+     (total - skip)`;
+  5. `total - skip < 2` → erro claro, burn-in não inicia (falha segura:
+     nunca escolher portas erradas por dedução).
 - **Aplicação**: no início do burn-in, novo `show interfaces brief` (sessão
   aberta), renderiza o template e envia linha a linha via `configure terminal`
   (padrão do `a10_cli`), **verificando o eco de cada linha** — marcadores de
@@ -210,6 +216,9 @@ trex:
   sample_interval_s: 60
   daemon_args: ["-i", "--astf"]
   extra_enable_ports: []     # ex.: [17, 18, 19, 20] se quiser o bloco antigo
+  trailing_highspeed_ports:  # portas finais 40G/100G a descontar, por padrão de modelo
+    - pattern: "4430|4440|5430|5440|5630|6430|6435|6440|5840|5845|7440|7445|7650|7655|14045"
+      skip: 4
 ```
 
 A seção só existe no `config.yaml` do lab (no servidor é ignorada). Atualizar
@@ -290,11 +299,11 @@ em qualquer versão.
 
 ## 6. Testes
 
-- **Unit `pick_lsn_ports`**: briefs falsos (formato 4.x e 5.x) — caixa de
-  9 portas 10G → eth8/9; caixa de 10 portas 10G → eth9/10; caixa de 16
-  portas 10G → eth15/16; caixa de 48 portas com bloco de 40G no fim →
-  últimas duas 10G antes do bloco; últimas portas não-10G → erro claro;
-  casos de parse com nomes/velocidades variados.
+- **Unit `pick_lsn_ports`**: modelo pequeno + brief de 9 portas → eth8/9;
+  10 portas → eth9/10; modelo 4430 + brief de 20 portas (skip 4) →
+  eth15/16; modelo 7650 + brief de 48 portas (skip 4) → eth43/44; brief
+  pequeno demais (total - skip < 2) → erro claro; padrão sem match → skip
+  0; override do mapa por config.
 - **Unit de template**: renderização com inside/outside; `extra_enable_ports`
   gerando blocos; linhas rejeitadas detectadas (eco com `% Invalid`/`^`).
 - **E2E worker (`FakeA10` + `FakeTRexClient`)**: ciclo completo com burn-in
@@ -330,9 +339,12 @@ em qualquer versão.
 
 ## 9. Riscos e pontos de atenção
 
-- **Portas físicas**: a regra das duas últimas 10G depende do
-  `show interfaces brief` ser fiel (velocidades reais). Em dúvida, o erro de
-  config aplicada aparece no relatório e o burn-in não começa (falha segura).
+- **Portas físicas**: a regra das duas últimas 10G depende do mapa de
+  modelos (`trailing_highspeed_ports`) bater com o hardware da bancada — o
+  brief só fornece a contagem. Modelo novo/sem match desconta 0 (se o
+  modelo tiver tail de 40G, o usuário adiciona o pattern no config). Em
+  dúvida, o erro de config aplicada aparece no relatório e o burn-in não
+  começa (falha segura).
 - **24h de TRex**: o daemon fica 24h em subprocesso no lab; se o PC do lab
   reiniciar, o burn-in aborta por infra (veredito aborted, sem culpar a
   caixa) — a caixa continua no modo teste e o teste pode ser refeito pelo
