@@ -186,13 +186,12 @@ def test_start_daemon_spawns_and_waits(monkeypatch):
     opened = []
 
     def fake_port_open(port, timeout=2.0):
-        return len(opened) > 1   # 2ª chamada: porta abriu
+        opened.append(port)
+        return len(opened) > 1   # 2ª chamada em diante: porta aberta
 
     monkeypatch.setattr(tc, "_port_open", fake_port_open)
     popen = FakePopen()
-    c = TRexClient("/opt/trex/v3.08", popen=popen)
-    # primeira chamada de _port_open acontece antes do spawn
-    opened.append(False)
+    c = TRexClient("/opt/trex/v3.08", popen=popen, sleep=lambda s: None)
     c.start_daemon(timeout=5)
     assert len(popen.spawned) == 1
     assert popen.spawned[0].args == ["/opt/trex/v3.08/t-rex-64", "-i",
