@@ -130,13 +130,18 @@ payload do comando, se enviados) e **volta ao `_test_mode`** (loop). O
   sai do template e vira opção de config **`trex.extra_enable_ports`** (lista,
   default vazia) — cada porta da lista gera `interface ethernet N` / `enable`.
 - **Regra das portas** (função pura `pick_lsn_ports(brief) -> (inside,
-  outside)` em `a10flash/burnin.py`):
+  outside)` em `a10flash/burnin.py`): a detecção é **sempre dinâmica**, a
+  partir do `show interfaces brief` da caixa — a bancada tem caixas de 9, 10
+  e 48 portas (e outros tamanhos); nada de porta hardcoded.
   1. parseia `show interfaces brief` (dual-formato, como os parsers
      existentes: 4.x/5.x);
-  2. ignora as 4 últimas portas se forem 40G;
-  3. seleciona as **duas últimas portas 10G**: inside = penúltima,
+  2. ignora o **bloco traseiro de portas 40G+** (nos modelos grandes as
+     últimas portas são 40G/100G e não servem para o TRex de 10G);
+  3. seleciona as **duas últimas portas** restantes: inside = penúltima,
      outside = última;
-  4. sem portas 10G suficientes → erro claro, burn-in não inicia.
+  4. verifica que as duas são 10G — se não forem (hardware fora do padrão
+     da bancada), erro claro e o burn-in não inicia (falha segura: nunca
+     escolher portas erradas por dedução).
 - **Aplicação**: no início do burn-in, novo `show interfaces brief` (sessão
   aberta), renderiza o template e envia linha a linha via `configure terminal`
   (padrão do `a10_cli`), **verificando o eco de cada linha** — marcadores de
@@ -284,9 +289,11 @@ em qualquer versão.
 
 ## 6. Testes
 
-- **Unit `pick_lsn_ports`**: briefs falsos (formato 4.x e 5.x) — 16 portas
-  10G → eth15/16; 28 portas com 4×40G no fim → últimas duas 10G; sem 10G →
-  erro; casos de parse com nomes/velocidades variados.
+- **Unit `pick_lsn_ports`**: briefs falsos (formato 4.x e 5.x) — caixa de
+  9 portas 10G → eth8/9; caixa de 10 portas 10G → eth9/10; caixa de 16
+  portas 10G → eth15/16; caixa de 48 portas com bloco de 40G no fim →
+  últimas duas 10G antes do bloco; últimas portas não-10G → erro claro;
+  casos de parse com nomes/velocidades variados.
 - **Unit de template**: renderização com inside/outside; `extra_enable_ports`
   gerando blocos; linhas rejeitadas detectadas (eco com `% Invalid`/`^`).
 - **E2E worker (`FakeA10` + `FakeTRexClient`)**: ciclo completo com burn-in
