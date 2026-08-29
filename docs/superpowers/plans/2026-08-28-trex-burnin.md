@@ -2116,7 +2116,7 @@ E os métodos (após `list_uptime`):
             rows = self._conn.execute(
                 "SELECT ts, tx_bps, rx_bps, tx_pps, rx_pps, "
                 "active_sessions, errors, uptime_s FROM burnin_samples "
-                "WHERE run_id = ? ORDER BY ts DESC LIMIT ?",
+                "WHERE run_id = ? ORDER BY ts ASC LIMIT ?",
                 (run_id, limit)).fetchall()
         return [dict(r) for r in rows]
 
