@@ -131,6 +131,7 @@
   };
   const agents = {};   // agent_id -> {online, devices: {key: status}}
   const paused = {};   // key -> bool
+  const burnin = {};   // key -> {run_id, started_ts, duration_h, cps, verdict}
   let devices = [];    // equipamentos registrados (resumo do DB)
   let openDetail = null; // serial aberto no detalhe
   let ws = null;
@@ -203,6 +204,19 @@
     render();
   }
 
+  function applyBurnin(msg) {
+    if (msg.type === "burnin_started" && msg.device) {
+      burnin[msg.device] = { run_id: msg.run_id, started_ts: msg.started_ts,
+        duration_h: msg.duration_h, cps: msg.cps, verdict: null };
+      render();
+    }
+    if (msg.type === "burnin_result" && msg.device) {
+      const b = burnin[msg.device] || {};
+      burnin[msg.device] = { ...b, verdict: msg.verdict, reason: msg.reason };
+      render();
+    }
+  }
+
   function render() {
     renderAgents();
     renderDevices();
@@ -218,6 +232,22 @@
         ${esc(id)} <span class="muted">(${n} disp.)</span>
       </span>`;
     }).join("") : '<span class="muted">nenhum agente conectado</span>';
+  }
+
+  function burninRow(key) {
+    const b = burnin[key];
+    const [label, cls] = (() => {
+      if (b.verdict === "pass") return ["burn-in: aprovada ✓", "st-success"];
+      if (b.verdict === "fail") return ["burn-in: REPROVADA ✗", "st-failed"];
+      if (b.verdict === "aborted") return ["burn-in: abortada", "st-aborted"];
+      const elapsed = Math.min((Date.now() / 1000 - b.started_ts)
+        / (b.duration_h * 3600), 1);
+      const pct = Math.round(elapsed * 100);
+      const done = Math.round((Date.now() / 1000 - b.started_ts) / 3600 * 10) / 10;
+      return [`burn-in: ${pct}% (${done}h/${b.duration_h}h, ${b.cps} CPS)`, "st-running"];
+    })();
+    const controls = b.verdict === null ? `<button class="danger btn-burnin-stop" data-key="${esc(key)}">Parar burn-in</button>` : "";
+    return `<div class="row"><span>${label}</span><b>${controls}</b></div>`;
   }
 
   function renderDevices() {
@@ -253,10 +283,13 @@
         <div class="row"><span>tentativas</span><b>${esc(st.attempts || 0)}</b></div>
         <div class="row"><span>última atualização</span><b>${stamp(st.updated_at || st.ts)}</b></div>
         ${st.message ? `<div class="row"><span>mensagem</span><b>${esc(st.message)}</b></div>` : ""}
+        ${burnin[f.key] ? burninRow(f.key) : ""}
         <div class="actions">
           ${running ? `<button class="toggle-pause" data-key="${esc(f.key)}">${pausedBtn}</button>` : ""}
           <button class="danger btn-abort" data-key="${esc(f.key)}">Abortar</button>
           <button class="ok btn-rerun" data-key="${esc(f.key)}">Repetir ciclo</button>
+          ${st.state === "test_mode" && !burnin[f.key]
+            ? `<button class="ok btn-burnin-start" data-key="${esc(f.key)}">Iniciar burn-in</button>` : ""}
         </div>
       </div>`;
     }).join("");
@@ -266,6 +299,12 @@
     });
     document.querySelectorAll(".btn-abort").forEach(b => {
       b.onclick = () => sendCmd(b.dataset.key, "abort");
+    });
+    document.querySelectorAll(".btn-burnin-stop").forEach(b => {
+      b.onclick = () => burninCmd(b.dataset.key, "stop");
+    });
+    document.querySelectorAll(".btn-burnin-start").forEach(b => {
+      b.onclick = () => burninCmd(b.dataset.key, "start");
     });
     document.querySelectorAll(".btn-rerun").forEach(b => {
       b.onclick = () => sendCmd(b.dataset.key, "rerun");
@@ -289,6 +328,35 @@
       }).then(r => log({ type: "log", level: "info", device,
         message: `comando ${command}: ${r.message}` }))
         .catch(e => log({ type: "log", level: "error", device, message: e.message }));
+    }
+  }
+
+  async function burninCmd(key, action) {
+    const dev = devices.find(d => (d.device_key || d.port) === key);
+    if (!dev) {
+      log({ type: "log", level: "error", device: key,
+        message: "equipamento sem serial registrado — não dá para iniciar burn-in" });
+      return;
+    }
+    const body = {};
+    if (action === "start") {
+      const cps = prompt("CPS do burn-in (vazio = default 1000):");
+      if (cps === null) return;
+      if (cps.trim()) body.cps = Number(cps.trim());
+      const dur = prompt("Duração em horas (vazio = default 24):");
+      if (dur === null) return;
+      if (dur.trim()) body.duration_h = Number(dur.trim());
+    }
+    try {
+      const r = await api(`/api/devices/${encodeURIComponent(dev.serial)}/burnin/${action}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      log({ type: "log", level: "info", device: key,
+        message: `burn-in ${action}: ${r.message}` });
+    } catch (e) {
+      log({ type: "log", level: "error", device: key, message: e.message });
     }
   }
 
@@ -390,6 +458,22 @@
         <h4>show environment</h4><pre>${esc(d.environment || "—")}</pre>
 <h4>show interfaces</h4><pre>${esc(d.interfaces || "—")}</pre>
 <h4>uptime (modo teste)</h4><div id="uptimeHist" class="muted">carregando…</div>`;
+      const hist = document.createElement("div");
+      hist.innerHTML = '<h4>Burn-ins</h4><div class="empty">carregando…</div>';
+      el.appendChild(hist);
+      api("/api/devices/" + encodeURIComponent(serial) + "/burnin").then(d => {
+        if (!d.runs.length) { hist.innerHTML = '<h4>Burn-ins</h4><div class="empty">nenhum burn-in registrado</div>'; return; }
+        const verdicts = { pass: ["aprovada ✓", "st-success"], fail: ["reprovada ✗", "st-failed"],
+          aborted: ["abortada", "st-aborted"], interrupted: ["interrompida", "st-waiting"] };
+        hist.innerHTML = `<h4>Burn-ins</h4><table class="devices-table"><tr>
+          <th>Início</th><th>Duração</th><th>CPS</th><th>Veredito</th><th>Motivo</th></tr>` +
+          d.runs.map(r => {
+            const [vlabel, vcls] = verdicts[r.verdict] || ["?", "st-waiting"];
+            return `<tr><td>${fmtDate(r.started_ts)}</td><td>${r.duration_h}h</td>
+            <td>${r.cps}</td><td class="${vcls}">${vlabel}</td>
+            <td>${esc(r.reason || "—")}</td></tr>`;
+          }).join("") + `</table>`;
+      }).catch(e => { hist.innerHTML = '<h4>Burn-ins</h4><div class="empty">' + e.message + '</div>'; });
       api("/api/devices/" + encodeURIComponent(serial) + "/uptime").then(u => {
         const rows = (u.samples || []);
         const fmt = s => Math.floor(s / 86400) + "d " +
@@ -433,6 +517,8 @@
         render();
       } else if (msg.type === "status" || msg.type === "agent_status" || msg.type === "device") {
         applyStatus(msg);
+      } else if (msg.type === "burnin_started" || msg.type === "burnin_result") {
+        applyBurnin(msg);
       } else if (msg.type === "device_saved") {
         loadDevices();   // novo registro no DB -> atualiza a tabela
       } else if (msg.type === "device_deleted") {
