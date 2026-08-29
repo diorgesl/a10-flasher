@@ -465,7 +465,7 @@
         if (!d.runs.length) { hist.innerHTML = '<h4>Burn-ins</h4><div class="empty">nenhum burn-in registrado</div>'; return; }
         const verdicts = { pass: ["aprovada ✓", "st-success"], fail: ["reprovada ✗", "st-failed"],
           aborted: ["abortada", "st-aborted"], interrupted: ["interrompida", "st-waiting"] };
-        hist.innerHTML = `<h4>Burn-ins</h4><table class="devices-table"><tr>
+        const runsHtml = `<h4>Burn-ins</h4><table class="devices-table"><tr>
           <th>Início</th><th>Duração</th><th>CPS</th><th>Veredito</th><th>Motivo</th></tr>` +
           d.runs.map(r => {
             const [vlabel, vcls] = verdicts[r.verdict] || ["?", "st-waiting"];
@@ -473,6 +473,16 @@
             <td>${r.cps}</td><td class="${vcls}">${vlabel}</td>
             <td>${esc(r.reason || "—")}</td></tr>`;
           }).join("") + `</table>`;
+        const samples = ((d.samples || {})[d.runs[0].run_id] || []);
+        const fmtBps = v => (v || 0) >= 1e9 ? (v / 1e9).toFixed(2) + " Gbps" : (v / 1e6).toFixed(1) + " Mbps";
+        const samplesHtml = samples.length
+          ? `<h4>Amostras do run mais recente</h4><table class="devices-table"><tr>
+              <th>Horário</th><th>TX</th><th>RX</th><th>Erros</th><th>Uptime</th></tr>` +
+            samples.slice(-50).map(r => `<tr><td>${fmtDate(r.ts)}</td><td>${fmtBps(r.tx_bps)}</td>
+              <td>${fmtBps(r.rx_bps)}</td><td>${esc(r.errors || 0)}</td>
+              <td>${((r.uptime_s || 0) / 3600).toFixed(1)}h</td></tr>`).join("") + `</table>`
+          : `<h4>Amostras do run mais recente</h4><div class="empty">sem amostras</div>`;
+        hist.innerHTML = runsHtml + samplesHtml;
       }).catch(e => { hist.innerHTML = '<h4>Burn-ins</h4><div class="empty">' + e.message + '</div>'; });
       api("/api/devices/" + encodeURIComponent(serial) + "/uptime").then(u => {
         const rows = (u.samples || []);
@@ -526,6 +536,8 @@
         applyStatus(msg);
       } else if (msg.type === "burnin_started" || msg.type === "burnin_result") {
         applyBurnin(msg);
+      } else if (msg.type === "burnin_sample") {
+        render();   // amostra (60s): re-renderiza o cartão e avança o progresso
       } else if (msg.type === "device_saved") {
         loadDevices();   // novo registro no DB -> atualiza a tabela
       } else if (msg.type === "device_deleted") {

@@ -341,6 +341,9 @@ class PortalServer:
                             self.notifier.error(
                                 None, f"falha ao salvar amostra de burn-in de "
                                       f"{msg.get('serial') or msg.get('device')}: {exc}")
+                        # encaminha ao dashboard: a amostra re-renderiza o
+                        # cartão e o progresso do burn-in avança (60s)
+                        self.bus.publish({**msg, "agent": agent_id})
                         continue
                     elif msg.get("type") == "burnin_result":
                         try:
