@@ -288,7 +288,7 @@
           ${running ? `<button class="toggle-pause" data-key="${esc(f.key)}">${pausedBtn}</button>` : ""}
           <button class="danger btn-abort" data-key="${esc(f.key)}">Abortar</button>
           <button class="ok btn-rerun" data-key="${esc(f.key)}">Repetir ciclo</button>
-          ${st.state === "test_mode" && !burnin[f.key]
+          ${st.state === "test_mode" && (!burnin[f.key] || burnin[f.key].verdict !== null)
             ? `<button class="ok btn-burnin-start" data-key="${esc(f.key)}">Iniciar burn-in</button>` : ""}
         </div>
       </div>`;
@@ -514,6 +514,13 @@
       if (msg.type === "snapshot") {
         for (const [aid, a] of Object.entries(msg.agents || {})) setAgent(aid, a);
         (msg.events || []).forEach(log);
+        // runs de burn-in ativos do portal: reconstrói progresso + botão Parar
+        for (const r of (msg.burnin || [])) {
+          if (r.device && burnin[r.device] === undefined) {
+            burnin[r.device] = { run_id: r.run_id, started_ts: r.started_ts,
+              duration_h: r.duration_h, cps: r.cps, verdict: null };
+          }
+        }
         render();
       } else if (msg.type === "status" || msg.type === "agent_status" || msg.type === "device") {
         applyStatus(msg);
