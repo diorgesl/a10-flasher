@@ -376,7 +376,7 @@ class SerialA10:
         return self.console
 
     # ------------------------------------------------------------ leituras
-    def wait_ready(self, timeout=600, on_wait=None):
+    def wait_ready(self, timeout=600, on_wait=None, on_loading=None):
         """Aguarda a caixa SAIR do modo LOADING (inicialização pós-reset).
 
         O ACOS pós-reset pode: mostrar 'ACOS(LOADING)#' (respondendo
@@ -389,6 +389,8 @@ class SerialA10:
         prompt normal (sem LOADING) aparece.
 
         `on_wait(elapsed)` é chamado a cada ~10s (para progresso).
+        `on_loading(elapsed)` é chamado UMA vez quando o prompt de
+        LOADING é observado (prova de boot real pós-reset).
         Retorna True quando pronta; False se o timeout estourar.
         """
         con = self._console()
@@ -396,6 +398,7 @@ class SerialA10:
         last_report = 0
         need_enable = False  # acabamos de logar no nível usuário (ACOS>)
         term_length_sent = False  # sessão sem paginação (--MORE--)
+        loading_seen = False  # on_loading dispara uma única vez
         while time.time() < deadline:
             elapsed = int(time.time() - (deadline - timeout))
             # 1) o que está na tela AGORA? (dados pendentes + 2s) —
@@ -435,6 +438,9 @@ class SerialA10:
                     continue  # volta ao topo: confirma o prompt
                 return True
             term_length_sent = False  # caiu de volta no LOADING
+            if on_loading is not None and not loading_seen:
+                loading_seen = True
+                on_loading(elapsed)
             if on_wait and elapsed - last_report >= 10:
                 last_report = elapsed
                 on_wait(elapsed)

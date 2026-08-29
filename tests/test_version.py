@@ -113,6 +113,22 @@ def test_parse_uptime():
     assert parse_uptime("") is None
 
 
+def test_parse_uptime_system_up():
+    """'The system has been up ...' -> segundos.
+
+    Regressão da bancada: vários modelos imprimem esse formato (sem
+    'Up Time:') — ex.: TH3030S — e o _wait_real_reboot ficava preso
+    com uptime ilegível.
+    """
+    line = "The system has been up 0 day, 6 hours, 31 minutes"
+    assert parse_uptime(line) == 6 * 3600 + 31 * 60
+    assert parse_uptime(
+        "The system has been up 2 days, 0 hours, 5 minutes") == \
+        2 * 86400 + 300
+    assert parse_uptime("The system has been up 31 minutes") == 31 * 60
+    assert parse_uptime("The system has been up 0 day, 0 hours, 0 minutes") == 0
+
+
 def test_parse_serial_number():
     """Serial no show version — formatos comuns do ACOS."""
     assert parse_serial_number("Serial Number: A10TH-12345") == "A10TH-12345"

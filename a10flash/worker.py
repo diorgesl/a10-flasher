@@ -539,11 +539,13 @@ class FlashWorker:
         raise FlashError(f"sem login no console serial após {timeout}s: "
                          f"{last}")
 
-    def _wait_ready(self, cli, timeout=None):
+    def _wait_ready(self, cli, timeout=None, on_loading=None):
         """Aguarda a caixa SAIR do modo LOADING (pós-reset/boot).
 
         No LOADING o ACOS responde 'System is not ready yet.' e os
         shows falham — espera ativa com progresso no portal.
+        `on_loading(elapsed)` dispara UMA vez quando o LOADING é visto
+        (prova de boot real pós-reset).
         """
         timeout = timeout or int(self.cfg.get("upgrade", {}).get("boot_wait", 600))
         self.notifier.info(
@@ -558,7 +560,8 @@ class FlashWorker:
                     self.device, f"caixa ainda iniciando há {elapsed}s...")
 
         try:
-            ready = cli.wait_ready(timeout=timeout, on_wait=_report)
+            ready = cli.wait_ready(timeout=timeout, on_wait=_report,
+                                   on_loading=on_loading)
         except ConsoleError:
             ready = False
         if ready:
@@ -579,10 +582,20 @@ class FlashWorker:
         revela: pós-reboot ele é sempre MENOR que o tempo desde o
         comando de reset (a caixa não pode ter bootado antes dele). Se
         a sessão cair no meio (reboot pegando), espera voltar e reloga.
+
+        Fallback: se o uptime é ILEGÍVEL (formato desconhecido — ex.:
+        'The system has been up...' do TH3030S antes do parser conhecer
+        o formato), o ACOS(LOADING) observado APÓS o reset confirma o
+        boot real — um parser desconhecido não pode segurar o ciclo.
         """
         timeout = timeout or int(self.cfg.get("upgrade", {}).get("boot_wait", 600))
         deadline = time.time() + timeout
-        self._wait_ready(cli, timeout=timeout)
+        saw_loading = [False]
+
+        def _on_loading(elapsed):
+            saw_loading[0] = True
+
+        self._wait_ready(cli, timeout=timeout, on_loading=_on_loading)
         last_report = 0
         while time.time() < deadline:
             try:
@@ -599,12 +612,21 @@ class FlashWorker:
                 rest = max(1, int(deadline - time.time()))
                 cli = self._wait_and_login(timeout=rest)
                 self._wait_ready(cli,
-                                 timeout=max(1, int(deadline - time.time())))
+                                 timeout=max(1, int(deadline - time.time())),
+                                 on_loading=_on_loading)
                 continue
             up = parse_uptime(out)
             elapsed = int(time.time() - since)
             if up is not None and up <= elapsed:
                 return cli   # uptime < tempo desde o reset = reboot REAL
+            if up is None and saw_loading[0]:
+                # uptime ilegível, mas a caixa passou pelo LOADING pós-
+                # reset = boot real (sessão antiga nunca mostra LOADING)
+                self.notifier.info(
+                    self.device,
+                    "Uptime ilegível, mas o LOADING pós-reset confirmou "
+                    "o reboot — seguindo.")
+                return cli
             now = time.time()
             if now - last_report >= 30:
                 last_report = now

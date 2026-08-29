@@ -1815,3 +1815,41 @@ def test_burnin_start_manual_via_mailbox():
         axapi.stop()
         fake.close()
         os.unlink(lsn_template)
+
+
+# ------------------------------------------- uptime do TH3030S (fix bancada)
+def test_ciclo_com_uptime_formato_3030s():
+    """TH3030S: show version imprime 'The system has been up ...' (sem
+    'Up Time:') — o ciclo confirma o reboot pelo uptime parseado e NÃO
+    fica preso no 'Sessão antiga' (regressão da bancada)."""
+    fake = FakeA10(version="4.1.4", booted="primary", mgmt_ip="10.0.0.10",
+                   reboot_delay=0.5, uptime_format="system_up")
+    axapi = FakeAxapiServer(sw_version="4.1.4")
+    try:
+        result, _ = run_worker(make_cfg(upgrade={"boot_wait": 30}), fake,
+                               axapi)
+        assert result["status"] == "success", result
+    finally:
+        axapi.stop()
+        fake.close()
+
+
+def test_ciclo_reboot_confirmado_por_loading_sem_uptime():
+    """Sem linha de uptime NENHUMA no show version, mas com ACOS(LOADING)
+    observado pós-reset: o reboot é confirmado pelo LOADING (fallback) —
+    um formato desconhecido não pode segurar o ciclo por 600s.
+
+    loading_seconds=10: a janela precisa cobrir o relogin pós-reboot
+    (o fallback só arma se o LOADING for OBSERVADO — na bancada o
+    LOADING do 3030S durou ~32s)."""
+    fake = FakeA10(version="4.1.4", booted="primary", mgmt_ip="10.0.0.10",
+                   reboot_delay=0.5, uptime_format="none",
+                   loading_seconds=10)
+    axapi = FakeAxapiServer(sw_version="4.1.4")
+    try:
+        result, _ = run_worker(make_cfg(upgrade={"boot_wait": 30}), fake,
+                               axapi)
+        assert result["status"] == "success", result
+    finally:
+        axapi.stop()
+        fake.close()

@@ -21,7 +21,7 @@ class FakeA10:
                  confirm_style="yn", loading_seconds=0,
                  drop_session_once=False, drop_to="login",
                  start_at_password=False, uptime_s=7380,
-                 reboot_pending_delay=0.0):
+                 uptime_format="up_time", reboot_pending_delay=0.0):
         master, slave = pty.openpty()
         self._master = master
         self._slave = slave   # guardado para simular desconexão (unplug)
@@ -57,6 +57,9 @@ class FakeA10:
         self.start_at_password = start_at_password
         # uptime reportado no show version (modo teste)
         self.uptime_s = uptime_s
+        # formato da linha de uptime: "up_time" (padrão ACOS), "system_up"
+        # (TH3030S: 'The system has been up ...') ou "none" (sem linha)
+        self.uptime_format = uptime_format
         self._booted_at = time.time()   # uptime zera a cada reboot
         # reboot ATRASADO (visto em bancada: o erase demora dezenas de
         # segundos até derrubar o console) — durante a espera a sessão
@@ -164,6 +167,12 @@ class FakeA10:
         d, s = divmod(s, 86400)
         h, s = divmod(s, 3600)
         m = s // 60
+        if self.uptime_format == "system_up":
+            # formato do TH3030S (sem 'Up Time:')
+            return (f"The system has been up {d} day, {h} hours, "
+                    f"{m} minutes\r\n")
+        if self.uptime_format == "none":
+            return ""   # caixa sem linha de uptime no show version
         return f"Up Time: {d}d {h}h {m}m (Active)\r\n"
 
     def _version_block(self):
