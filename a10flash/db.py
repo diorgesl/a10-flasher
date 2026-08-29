@@ -48,6 +48,37 @@ CREATE TABLE IF NOT EXISTS uptime_samples (
 CREATE INDEX IF NOT EXISTS idx_uptime_serial ON uptime_samples (serial, ts);
 """
 
+# Burn-in: um run por execução (24h), amostras de tráfego por run.
+_BURNIN_SCHEMA = """
+CREATE TABLE IF NOT EXISTS burnin_runs (
+    run_id        TEXT PRIMARY KEY,
+    serial        TEXT NOT NULL,
+    device        TEXT,
+    started_ts    REAL NOT NULL,
+    ended_ts      REAL,
+    duration_h    REAL,
+    cps           REAL,
+    verdict       TEXT,
+    reason        TEXT,
+    config_errors TEXT,
+    summary       TEXT
+);
+CREATE TABLE IF NOT EXISTS burnin_samples (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id          TEXT NOT NULL,
+    serial          TEXT NOT NULL,
+    ts              REAL NOT NULL,
+    tx_bps          REAL,
+    rx_bps          REAL,
+    tx_pps          REAL,
+    rx_pps          REAL,
+    active_sessions INTEGER,
+    errors          INTEGER,
+    uptime_s        INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_burnin_run ON burnin_samples (run_id, ts);
+"""
+
 
 class DeviceStore:
     def __init__(self, path="a10flash.db"):
@@ -69,6 +100,7 @@ class DeviceStore:
                 pass  # coluna já existe
             # executescript: o schema tem CREATE TABLE + CREATE INDEX
             self._conn.executescript(_UPTIME_SCHEMA)
+            self._conn.executescript(_BURNIN_SCHEMA)
             self._conn.commit()
 
     def close(self):
@@ -168,6 +200,86 @@ class DeviceStore:
                 "WHERE serial = ? ORDER BY ts DESC LIMIT ?",
                 ((serial or "").strip(), limit),
             ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------ burn-in
+    def start_burnin_run(self, run_id, serial, device, cps, duration_h,
+                         started_ts):
+        if not run_id:
+            return None
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO burnin_runs (run_id, serial, "
+                "device, started_ts, duration_h, cps, verdict, reason, "
+                "config_errors, summary) VALUES (?, ?, ?, ?, ?, ?, ?, ?, "
+                "?, ?)",
+                (run_id, (serial or "").strip(), device, started_ts,
+                 duration_h, cps, None, None, "[]", ""))
+            self._conn.commit()
+        return run_id
+
+    def finish_burnin_run(self, run_id, ended_ts, verdict, reason,
+                          config_errors, summary):
+        if not run_id:
+            return None
+        with self._lock:
+            self._conn.execute(
+                "UPDATE burnin_runs SET ended_ts = ?, verdict = ?, "
+                "reason = ?, config_errors = ?, summary = ? "
+                "WHERE run_id = ?",
+                (ended_ts, verdict, reason or "", config_errors or "[]",
+                 summary or "", run_id))
+            self._conn.commit()
+        return run_id
+
+    def add_burnin_sample(self, run_id, serial, ts, tx_bps, rx_bps,
+                          tx_pps, rx_pps, active_sessions, errors,
+                          uptime_s):
+        if not run_id:
+            return None
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO burnin_samples (run_id, serial, ts, tx_bps, "
+                "rx_bps, tx_pps, rx_pps, active_sessions, errors, "
+                "uptime_s) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (run_id, (serial or "").strip(), ts, tx_bps, rx_bps,
+                 tx_pps, rx_pps, int(active_sessions), int(errors),
+                 int(uptime_s)))
+            self._conn.commit()
+        return ts
+
+    def list_burnin_runs(self, serial, limit=20):
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM burnin_runs WHERE serial = ? "
+                "ORDER BY started_ts DESC LIMIT ?",
+                ((serial or "").strip(), limit)).fetchall()
+        return [dict(r) for r in rows]
+
+    def list_burnin_samples(self, run_id, limit=2000):
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT ts, tx_bps, rx_bps, tx_pps, rx_pps, "
+                "active_sessions, errors, uptime_s FROM burnin_samples "
+                "WHERE run_id = ? ORDER BY ts ASC LIMIT ?",
+                (run_id, limit)).fetchall()
+        return [dict(r) for r in rows]
+
+    def active_burnin(self, serial):
+        """Run em andamento de um equipamento (ended_ts NULL) ou None."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM burnin_runs WHERE serial = ? "
+                "AND ended_ts IS NULL ORDER BY started_ts DESC LIMIT 1",
+                ((serial or "").strip(),)).fetchone()
+        return dict(row) if row else None
+
+    def active_burnin_runs(self):
+        """Todos os runs em andamento (snapshot do dashboard)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM burnin_runs WHERE ended_ts IS NULL "
+                "ORDER BY started_ts DESC").fetchall()
         return [dict(r) for r in rows]
 
     def count(self):

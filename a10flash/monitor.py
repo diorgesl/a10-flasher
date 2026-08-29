@@ -160,14 +160,16 @@ class PortMonitor:
         código do agente não pode cair no meio de um ciclo."""
         return any(r["thread"].is_alive() for r in self.known.values())
 
-    def send_command(self, key, command, reason=None):
-        """Envia comando (abort|pause|resume) para o worker da chave."""
+    def send_command(self, key, command, reason=None, **extra):
+        """Envia comando (abort|pause|resume|burnin_*) para o worker da
+        chave. `extra` viaja junto no comando (ex.: cps/duration_h)."""
         rec = self.known.get(key)
         if rec is None:
             return False, "dispositivo não encontrado"
         if not rec["thread"].is_alive():
             return False, "worker não está rodando"
-        rec["mailbox"].send({"command": command, "reason": reason})
+        rec["mailbox"].send({"command": command, "reason": reason,
+                             **extra})
         return True, "comando enviado"
 
     def request_run(self, key, path=None):

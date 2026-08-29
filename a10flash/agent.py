@@ -173,11 +173,13 @@ class AgentClient:
             return
         ok, message = False, "monitor indisponível"
         if self.monitor is not None:
+            extra = {k: v for k, v in msg.items()
+                     if k not in ("type", "device", "command", "reason")}
             if command == "rerun":
                 ok, message = self.monitor.request_run(key)
             else:
                 ok, message = self.monitor.send_command(
-                    key, command, msg.get("reason"))
+                    key, command, msg.get("reason"), **extra)
         self.bus.publish({"type": "cmd_ack", "device": key,
                           "command": command, "ok": ok, "message": message})
 

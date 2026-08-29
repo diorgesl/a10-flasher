@@ -99,3 +99,21 @@ def test_uptime_samples():
     assert rows[1]["uptime_s"] == 7380
     assert rows[0]["ts"] == 200.0
     assert store.list_uptime("OUTRA") == []
+
+
+def test_burnin_run_lifecycle():
+    store = DeviceStore(":memory:")
+    store.start_burnin_run("run-1", "SER-1", "dev-a", 1000, 24, 100.0)
+    assert store.active_burnin("SER-1")["run_id"] == "run-1"
+    assert store.active_burnin("OUTRA") is None
+    store.add_burnin_sample("run-1", "SER-1", 101.0, 1000, 900, 50, 45,
+                            10, 2, 3600)
+    store.add_burnin_sample("run-1", "SER-1", 102.0, 1100, 950, 55, 48,
+                            12, 1, 3660)
+    store.finish_burnin_run("run-1", 200.0, "pass", "", "[]", "ok")
+    assert store.active_burnin("SER-1") is None
+    runs = store.list_burnin_runs("SER-1")
+    assert len(runs) == 1 and runs[0]["verdict"] == "pass"
+    samples = store.list_burnin_samples("run-1")
+    assert len(samples) == 2
+    assert samples[0]["uptime_s"] == 3600

@@ -29,8 +29,8 @@ class FakeMonitor:
     def __init__(self):
         self.calls = []
 
-    def send_command(self, key, command, reason=None):
-        self.calls.append(("cmd", key, command, reason))
+    def send_command(self, key, command, reason=None, **extra):
+        self.calls.append(("cmd", key, command, reason, extra))
         return True, "ok (fake)"
 
     def request_run(self, key):
@@ -311,7 +311,7 @@ def test_agente_e2e_loopback():
                           and m.get("message") == "ok (fake)")
         assert ack["ok"] is True
         # o monitor fake registrou o comando
-        assert ("cmd", "dev-a", "abort", "teste") in monitor.calls
+        assert ("cmd", "dev-a", "abort", "teste", {}) in monitor.calls
 
         # 4. REST: status mostra agente e dispositivo
         r = requests.get(f"http://127.0.0.1:{port}/api/status",
@@ -497,3 +497,79 @@ def test_uptime_sample_com_falha_no_db_nao_derruba_agente():
         assert portal.agents["lab-1"]["online"] is True
     # e o erro foi REGISTRADO (não engolido em silêncio)
     assert any("uptime" in m for m in seen), seen
+
+
+# ------------------------------------------------------------- burn-in
+def test_rest_burnin_history_vazio():
+    portal = make_portal()
+    client = TestClient(portal.app)
+    r = client.get("/api/devices/SER-1/burnin",
+                   headers={"X-Token": "segredo"})
+    assert r.status_code == 200
+    assert r.json() == {"runs": [], "samples": {}}
+
+
+def test_burnin_events_via_ws_agente_salvam_no_db():
+    portal = make_portal()
+    client = TestClient(portal.app)
+    portal.store.start_burnin_run("run-9", "SER-9", "dev-9", 100, 1,
+                                  1000.0)
+    with client.websocket_connect("/agent?token=segredo") as ws:
+        ws.send_json({"type": "hello", "agent": "lab-1"})
+        ws.receive_json()   # welcome
+        ws.send_json({"type": "burnin_sample", "run_id": "run-9",
+                      "serial": "SER-9", "ts": 1010.0, "tx_bps": 1,
+                      "rx_bps": 2, "tx_pps": 3, "rx_pps": 4,
+                      "active_sessions": 5, "errors": 0,
+                      "uptime_s": 60})
+        time.sleep(0.2)
+        ws.send_json({"type": "burnin_result", "run_id": "run-9",
+                      "serial": "SER-9", "ts": 1020.0,
+                      "verdict": "pass", "reason": "", "summary": "ok"})
+        time.sleep(0.2)
+    assert len(portal.store.list_burnin_samples("run-9")) == 1
+    runs = portal.store.list_burnin_runs("SER-9")
+    assert runs and runs[0]["verdict"] == "pass"
+    assert portal.store.active_burnin("SER-9") is None
+
+
+def test_rest_burnin_start_valida_estado():
+    portal = make_portal()
+    client = TestClient(portal.app)
+    portal.store.upsert(serial="SER-1", device_key="dev-a")
+    # caixa conectada em test_mode (via hello do agente)
+    with client.websocket_connect("/agent?token=segredo") as ws:
+        ws.send_json({"type": "hello", "agent": "lab-1",
+                      "devices": {"dev-a": {"device": "dev-a",
+                                            "state": "test_mode"}}})
+        ws.receive_json()   # welcome
+        # start válido -> 200
+        r = client.post("/api/devices/SER-1/burnin/start",
+                        json={"cps": 2000},
+                        headers={"X-Token": "segredo"})
+        assert r.status_code == 200, r.text
+        # run já em andamento -> 409
+        portal.store.start_burnin_run("run-1", "SER-1", "dev-a", 1000,
+                                      24, time.time())
+        r = client.post("/api/devices/SER-1/burnin/start",
+                        json={}, headers={"X-Token": "segredo"})
+        assert r.status_code == 409, r.text
+    # sem run ativo, mas caixa fora de test_mode -> 409
+    portal.store.finish_burnin_run("run-1", time.time(), "aborted", "",
+                                   "[]", "")
+    with client.websocket_connect("/agent?token=segredo") as ws:
+        ws.send_json({"type": "hello", "agent": "lab-1",
+                      "devices": {"dev-a": {"device": "dev-a",
+                                            "state": "running"}}})
+        ws.receive_json()   # welcome
+    r = client.post("/api/devices/SER-1/burnin/start",
+                    json={}, headers={"X-Token": "segredo"})
+    assert r.status_code == 409, r.text
+
+
+def test_rest_burnin_stop_sem_run_409():
+    portal = make_portal()
+    client = TestClient(portal.app)
+    r = client.post("/api/devices/SER-X/burnin/stop",
+                    json={}, headers={"X-Token": "segredo"})
+    assert r.status_code == 409

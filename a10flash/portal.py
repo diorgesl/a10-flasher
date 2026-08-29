@@ -35,12 +35,14 @@ from .notify import Notifier
 from .report import ReportError, analyze_with_llm, build_pdf, pdf_filename
 
 INDEX_HTML = os.path.join(os.path.dirname(__file__), "web", "index.html")
-COMMANDS = {"abort", "pause", "resume", "rerun"}
+COMMANDS = {"abort", "pause", "resume", "rerun", "burnin_start",
+            "burnin_stop"}
 # comandos de AGENTE (POST /api/agents/{id}/cmd) — não vão para workers
 AGENT_COMMANDS = {"update"}
 # tipos de mensagem aceitos dos agentes (WS /agent)
 AGENT_TYPES = {"status", "stage", "log", "cmd_ack", "device", "device_result",
-               "uptime_sample"}
+               "uptime_sample", "burnin_started", "burnin_sample",
+               "burnin_result"}
 
 
 class PortalServer:
@@ -155,6 +157,65 @@ class PortalServer:
             return JSONResponse(
                 {"samples": self.store.list_uptime(serial)})
 
+        @app.get("/api/devices/{serial}/burnin")
+        async def api_burnin(serial: str, request: Request):
+            """Histórico de burn-ins (runs + amostras) de um equipamento."""
+            self._authorize(request)
+            runs = self.store.list_burnin_runs(serial)
+            samples = {r["run_id"]: self.store.list_burnin_samples(
+                r["run_id"]) for r in runs}
+            return JSONResponse({"runs": runs, "samples": samples})
+
+        @app.post("/api/devices/{serial}/burnin/start")
+        async def api_burnin_start(serial: str, request: Request):
+            """Dispara burn-in manual na caixa (só em modo teste)."""
+            self._authorize(request)
+            body = await request.json()
+            rec = self.store.get(serial)
+            if rec is None:
+                raise HTTPException(status_code=404,
+                                    detail="equipamento não registrado")
+            key = rec.get("device_key") or rec.get("port")
+            online = None
+            for aid, arec in self.agents.items():
+                dev = arec.get("devices", {}).get(key)
+                if arec.get("online") and dev is not None:
+                    online = dev
+                    break
+            if online is None:
+                raise HTTPException(status_code=409,
+                                    detail="equipamento não está conectado "
+                                           "a um agente")
+            if online.get("state") != "test_mode":
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"equipamento não está em modo teste "
+                           f"(estado: {online.get('state')})")
+            if self.store.active_burnin(serial):
+                raise HTTPException(status_code=409,
+                                    detail="já existe burn-in em andamento")
+            ok, message = await self._route_command(
+                key, "burnin_start", None,
+                payload={"cps": body.get("cps"),
+                         "duration_h": body.get("duration_h")})
+            if not ok:
+                raise HTTPException(status_code=409, detail=message)
+            return JSONResponse({"ok": True, "message": message})
+
+        @app.post("/api/devices/{serial}/burnin/stop")
+        async def api_burnin_stop(serial: str, request: Request):
+            """Para o burn-in em andamento (erase + volta ao modo teste)."""
+            self._authorize(request)
+            rec = self.store.get(serial)
+            if rec is None or not self.store.active_burnin(serial):
+                raise HTTPException(status_code=409,
+                                    detail="sem burn-in em andamento")
+            key = rec.get("device_key") or rec.get("port")
+            ok, message = await self._route_command(key, "burnin_stop")
+            if not ok:
+                raise HTTPException(status_code=409, detail=message)
+            return JSONResponse({"ok": True, "message": message})
+
         @app.post("/api/agents/{agent_id}/cmd")
         async def api_agent_cmd(agent_id: str, request: Request):
             """Comando para o AGENTE (não para um dispositivo): update.
@@ -252,6 +313,50 @@ class PortalServer:
                                 f"{msg.get('serial') or msg.get('device')}: "
                                 f"{exc}")
                         continue
+                    elif msg.get("type") == "burnin_started":
+                        try:
+                            self.store.start_burnin_run(
+                                msg.get("run_id", ""),
+                                msg.get("serial", ""), msg.get("device", ""),
+                                msg.get("cps", 0), msg.get("duration_h", 0),
+                                msg.get("started_ts") or time.time())
+                        except Exception as exc:
+                            self.notifier.error(
+                                None, f"falha ao iniciar run de burn-in de "
+                                      f"{msg.get('serial') or msg.get('device')}: {exc}")
+                        self._track(agent_id, msg)
+                        self.bus.publish({**msg, "agent": agent_id})
+                        continue
+                    elif msg.get("type") == "burnin_sample":
+                        try:
+                            self.store.add_burnin_sample(
+                                msg.get("run_id", ""),
+                                msg.get("serial", ""), msg.get("ts"),
+                                msg.get("tx_bps", 0), msg.get("rx_bps", 0),
+                                msg.get("tx_pps", 0), msg.get("rx_pps", 0),
+                                msg.get("active_sessions", 0),
+                                msg.get("errors", 0),
+                                msg.get("uptime_s", 0))
+                        except Exception as exc:
+                            self.notifier.error(
+                                None, f"falha ao salvar amostra de burn-in de "
+                                      f"{msg.get('serial') or msg.get('device')}: {exc}")
+                        continue
+                    elif msg.get("type") == "burnin_result":
+                        try:
+                            self.store.finish_burnin_run(
+                                msg.get("run_id", ""),
+                                msg.get("ended_ts") or time.time(),
+                                msg.get("verdict", "aborted"),
+                                msg.get("reason", ""),
+                                json.dumps(msg.get("config_errors") or []),
+                                msg.get("summary", ""))
+                        except Exception as exc:
+                            self.notifier.error(
+                                None, f"falha ao finalizar run de burn-in de "
+                                      f"{msg.get('serial') or msg.get('device')}: {exc}")
+                        self.bus.publish({**msg, "agent": agent_id})
+                        continue
                     elif msg.get("type") in AGENT_TYPES:
                         if msg.get("type") == "device_result":
                             rec = self._save_device_record(agent_id, msg)
@@ -302,8 +407,10 @@ class PortalServer:
                     {"type": "cmd_ack", "ok": False,
                      "message": "comando inválido"})
                 return
+            payload = {k: v for k, v in msg.items()
+                       if k in ("cps", "duration_h") and v is not None}
             ok, message = await self._route_command(
-                key, command, msg.get("reason"))
+                key, command, msg.get("reason"), payload or None)
             await websocket.send_json(
                 {"type": "cmd_ack", "device": key, "command": command,
                  "ok": ok, "message": message})
@@ -320,14 +427,17 @@ class PortalServer:
                 or websocket.headers.get("x-token") == self.token)
 
     # -------------------------------------------------------- comandos
-    async def _route_command(self, key, command, reason=None):
+    async def _route_command(self, key, command, reason=None, payload=None):
         """Encaminha comando para o agente dono do dispositivo."""
+        extra = {}
+        if payload:
+            extra = {k: v for k, v in payload.items() if v is not None}
         for agent_id, rec in self.agents.items():
             if rec.get("online") and key in rec.get("devices", {}):
                 try:
                     await rec["ws"].send_json({
                         "type": "cmd", "device": key, "command": command,
-                        "reason": reason})
+                        "reason": reason, **extra})
                 except Exception:
                     return False, "falha ao enviar ao agente"
                 return True, f"comando enviado ao agente {agent_id}"
@@ -396,8 +506,10 @@ class PortalServer:
         return {"agents": agents, "ts": time.time()}
 
     def _snapshot(self):
-        return {"type": "snapshot", "agents": self._status_payload()["agents"],
-                "events": self.bus.history(200)}
+        payload = {"type": "snapshot", "agents": self._status_payload()["agents"],
+                   "events": self.bus.history(200)}
+        payload["burnin"] = self.store.active_burnin_runs()
+        return payload
 
 
 # ------------------------------------------------------------ CLI
