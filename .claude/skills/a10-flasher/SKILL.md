@@ -48,6 +48,29 @@ acompanhamento e registro dos equipamentos.
    TESTES: o fake NÃO "despluga" de verdade (o node do pty persiste no
    macOS enquanto o worker segura o fd) — os helpers patcheiam
    `os.path.exists` para o caminho do fake no evento `test_mode`.
+6. **BURN-IN (só caminho de sucesso, com `trex.enabled: true`)**: ANTES do
+   modo teste — aplica config CGNAT/LSN (`trex/config_lsn.conf`, template
+   com `{INSIDE_PORT}`/`{OUTSIDE_PORT}` renderizado por caixa), `write
+   memory`, sobe o daemon TRex (`t-rex-64 -i --astf`, lib Python em
+   `<trex.path>/automation/trex_control_plane/interactive/`), roda
+   `trex/astf/a10_astf.py` a `trex.cps` (default 1000) por
+   `trex.duration_h` (default 24h). Vereditos: `pass` (24h sem
+   reiniciar), `fail` (uptime zerou = reiniciou sob carga — caixa fica
+   conectada p/ inspeção), `interrupted` (desconectada), `aborted`
+   (parada/erro de config/infra). Fim do burn-in: factory reset (erase)
+   e volta ao modo teste. Manual: `POST /api/devices/{serial}/burnin/
+   start` (só com caixa em test_mode) e `/stop`; comando via mailbox.
+   REGRA DE PORTAS: modelo (`show version`) define quantas portas
+   traseiras de 40G/100G descontar (`trex.trailing_highspeed_ports`,
+   default 4 para os modelos "4430+" e 0 para os demais — o brief NÃO
+   distingue velocidade, só conta as portas); inside = penúltima
+   restante, outside = última. Linha de config rejeitada (`%
+   Invalid`/`syntax error` no eco) → burn-in não inicia e o portal
+   mostra as linhas. Eventos: `burnin_started`/`burnin_sample`/
+   `burnin_result`; DB: tabelas `burnin_runs`/`burnin_samples`.
+   `pause`/`resume` NÃO se aplicam durante o burn-in (consumidos sem
+   efeito). TRex é infra: erro dele NUNCA vira `fail` da caixa (aborta
+   por infra após 5 min de backoff).
 
 ## Login serial — pitfalls críticos (todos descobertos em hardware real)
 

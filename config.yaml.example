@@ -123,3 +123,18 @@ notify:
     token: ""
     chat_id: ""
   log_file: logs/flash.log
+
+# Burn-in de estabilidade (24h de tráfego CGNAT/LSN via TRex).
+# Só existe no config do LAB (no servidor é ignorada).
+trex:
+  enabled: true               # burn-in automático pós-ciclo (caixa na versão alvo)
+  path: /opt/trex/v3.08       # instalação do TRex no PC do lab
+  lsn_config: trex/config_lsn.conf   # template com {INSIDE_PORT}/{OUTSIDE_PORT}
+  cps: 1000                   # ~2 Gbps no teste manual de referência
+  duration_h: 24
+  sample_interval_s: 60
+  daemon_args: ["-i", "--astf"]
+  extra_enable_ports: []      # ex.: [17, 18, 19, 20] para habilitar portas extras
+  trailing_highspeed_ports:   # portas finais de 40G/100G a descontar, por modelo
+    - pattern: "4430|4440|5430|5440|5630|6430|6435|6440|5840|5845|7440|7445|7650|7655|14045"
+      skip: 4
