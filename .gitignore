@@ -20,3 +20,5 @@ processed_serials.json
 # embutidas nas URLs de firmware — o config real fica fora do projeto)
 config.yaml
 deploy/docker/.env
+
+graphify-out

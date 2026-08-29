@@ -16,8 +16,10 @@ import time
 
 from .a10_axapi import A10Axapi, AxapiError
 from .a10_cli import A10Error, SerialA10
+from .burnin import BurninAbort, BurninController
 from .serial_console import ConsoleError
 from .state import ProcessedSerials
+from .trex_client import TRexClient
 from .version import (
     compare_versions,
     parse_uptime,
@@ -46,7 +48,7 @@ class FlashWorker:
                  cli_cls=SerialA10, axapi_cls=A10Axapi,
                  resolve_port=None, on_event=None,
                  axapi_base_override=None, bus=None, mailbox=None,
-                 force_cycle=False):
+                 force_cycle=False, trex_cls=TRexClient):
         self.cfg = cfg
         self.device = port_key          # nome estável (ex.: by-id do USB)
         self.port_path = port_path      # caminho atual do dispositivo
@@ -60,15 +62,16 @@ class FlashWorker:
         self.bus = bus                  # EventBus (portal)
         self.mailbox = mailbox          # Mailbox de comandos do portal
         self.force_cycle = force_cycle  # 'Repetir ciclo': ignora o cache
+        self.trex_cls = trex_cls        # TRexClient (fake nos testes)
         self._paused = threading.Event()
+        self._deferred_cmds = []   # comandos deferidos nas fronteiras de estágio
         self._attempts = 0
         self._version = None
         self._state = "running"
         self._stage = None
         self._processed = None
-        # identidade desta instância: o RETRY (mesmo worker) não se
-        # auto-bloqueia no cache; QUALQUER outro worker (re-plugue na
-        # mesma porta, daemon reiniciado) pula.
+        # identidade desta instância (metadata no cache — o skip NÃO
+        # consulta o owner: id(self) pode ser reusado por outro worker)
         self._owner = f"{os.getpid()}:{id(self)}"
 
     # ------------------------------------------------------------ hooks
@@ -79,7 +82,10 @@ class FlashWorker:
         if self.bus:
             self.bus.publish({"type": "stage", "device": self.device,
                               "stage": detail or stage, "detail": detail})
-        self._check_commands()
+        # comandos não tratados (ex.: burnin_start) NÃO podem ser
+        # descartados nas fronteiras de estágio — ficam deferidos até o
+        # loop do modo teste drenar
+        self._deferred_cmds.extend(self._check_commands())
 
     def _resolve(self):
         if self.resolve_port:
@@ -99,18 +105,19 @@ class FlashWorker:
     def _skip_if_processed(self, serial, version):
         """Se a caixa já passou por um ciclo bem-sucedido, pula (sem
         upgrade/reset destrutivos). `force_cycle` (Repetir ciclo no
-        portal) ignora o cache."""
+        portal) ignora o cache.
+
+        Sempre pula se estiver no cache: a marcação só acontece no FIM
+        do ciclo (depois do registro), então não existe "retry do mesmo
+        worker depois da marcação" — e a antiga exceção por owner
+        (pid:id(self)) era furada porque o CPython REUSA ids de objetos
+        mortos: um worker novo podia nascer com o owner de um morto e
+        reprocessar a caixa sem querer.
+        """
         if self.force_cycle or not serial:
             return False
         cache = self._processed_cache()
         if cache.contains(serial):
-            # se o PRÓPRIO worker (mesma instância) marcou, é o ciclo
-            # em andamento ou um retry — NÃO pula. Qualquer outro
-            # worker (re-plugue na mesma porta, 2º adaptador, daemon
-            # reiniciado) -> pula.
-            owner = cache.processed_by_owner(serial)
-            if owner and owner == self._owner:
-                return False
             self.notifier.info(
                 self.device,
                 f"Caixa {serial} já processada com sucesso — pulando "
@@ -153,7 +160,7 @@ class FlashWorker:
                 )
                 self._publish_status(result=result)
                 return result
-            except FlashAbort as exc:
+            except (FlashAbort, BurninAbort) as exc:
                 self._state = "aborted"
                 self.notifier.warn(self.device, f"Ciclo abortado: {exc}")
                 self._publish_status(result={"status": "aborted",
@@ -187,14 +194,26 @@ class FlashWorker:
                 )
 
     # ------------------------------------------------------- comandos
+    def _drain_commands(self):
+        """Comandos da mailbox + os que _event deferiu nas fronteiras de
+        estágio (não podem ser descartados)."""
+        cmds = self._check_commands()
+        if self._deferred_cmds:
+            cmds = self._deferred_cmds + cmds
+            self._deferred_cmds = []
+        return cmds
+
     def _check_commands(self):
         """Consome comandos do portal nas fronteiras de estágio.
 
         Pausa bloqueia aqui até receber resume (ou abort). Nunca interrompe
-        uma operação no meio (upgrade, reboot, etc).
+        uma operação no meio (upgrade, reboot, etc). Retorna a lista de
+        comandos que o chamador precisa ver (ex.: burnin_start no modo
+        teste) — abort/pause/resume são consumidos aqui.
         """
         if self.mailbox is None:
-            return
+            return []
+        handled = []
         while True:
             for cmd in self.mailbox.drain():
                 kind = cmd.get("command")
@@ -215,8 +234,10 @@ class FlashWorker:
                         self.notifier.info(
                             self.device, "Ciclo retomado pelo operador")
                         self._publish_status()
+                if kind not in ("abort", "pause", "resume"):
+                    handled.append(cmd)
             if not self._paused.is_set():
-                return
+                return handled
             time.sleep(0.3)
 
     def _publish_status(self, result=None):
@@ -348,10 +369,10 @@ class FlashWorker:
                     "upgraded": False,
                     "device_info": device_info,
                 })
-                samples = self._test_mode(cli, serial)
+                mon = self._monitor_phase(cli, serial, device_info)
                 return {"status": "skipped", "version": version,
                         "upgraded": False, "serial": serial,
-                        "test_mode": True, "uptime_samples": samples,
+                        **mon,
                         "summary": f"caixa {serial} já processada — "
                                    "nada a fazer"}
 
@@ -441,11 +462,13 @@ class FlashWorker:
             # o portal — caixa que falhou antes daqui fica fora do cache
             # e é reprocessada (e registrada) num re-plugue
             self._mark_processed(device_info.get("serial"))
-            # MODO TESTE: a caixa atualizada fica conectada na serial
-            # coletando uptime até ser desconectada (ou abort do portal)
-            samples = self._test_mode(cli, device_info.get("serial"))
-            result["test_mode"] = True
-            result["uptime_samples"] = samples
+            # MODO TESTE + BURN-IN: a caixa atualizada fica conectada na
+            # serial; com `trex.enabled`, o burn-in roda antes do modo
+            # teste (config LSN + 24h de tráfego -> veredito -> erase)
+            auto = bool(self.cfg.get("trex", {}).get("enabled", False))
+            result.update(self._monitor_phase(
+                cli, device_info.get("serial"), device_info,
+                auto_burnin=auto))
             return result
         finally:
             try:
@@ -1134,7 +1157,9 @@ class FlashWorker:
         uptime (`show version`) a cada `test_interval_h` horas até a
         caixa ser desconectada (porta sumir) ou um abort do portal.
 
-        Retorna o número de amostras coletadas.
+        Retorna dict `{"samples": int, "burnin": cmd|None}` — `burnin`
+        é o comando `burnin_start` pendente da mailbox (o `_monitor_phase`
+        roda o burn-in manual e volta ao modo teste).
         """
         interval = (float(self.cfg.get("device", {})
                           .get("test_interval_h", 1)) * 3600)
@@ -1154,7 +1179,9 @@ class FlashWorker:
         next_at = time.time() + interval
         self._event("stage", "test_mode")
         while True:
-            self._check_commands()   # abort do portal encerra (FlashAbort)
+            for cmd in self._drain_commands():
+                if cmd.get("command") == "burnin_start":
+                    return {"samples": samples, "burnin": cmd}
             if not os.path.exists(self.port_path):
                 self.notifier.info(
                     self.device,
@@ -1169,7 +1196,67 @@ class FlashWorker:
                                    "de uptime coletada(s)"})
                 next_at = now + interval
             time.sleep(1)
-        return samples
+        return {"samples": samples, "burnin": None}
+
+    def _monitor_phase(self, cli, serial, device_info, auto_burnin=False):
+        """Modo teste + burn-in (automático pós-ciclo e manual via portal).
+
+        O burn-in roda enquanto a caixa está conectada; ao fim (qualquer
+        veredito com erase), o modo teste continua coletando uptime até a
+        desconexão.
+        """
+        total_samples = 0
+        burnin = {} if auto_burnin else None
+        while True:
+            if burnin is not None:
+                cli = self._run_burnin(
+                    cli, serial, device_info,
+                    burnin.get("cps"), burnin.get("duration_h"))
+                burnin = None
+            res = self._test_mode(cli, serial)
+            total_samples += res["samples"]
+            if res.get("burnin") is None:
+                return {"test_mode": True,
+                        "uptime_samples": total_samples}
+            burnin = res["burnin"]
+
+    def _run_burnin(self, cli, serial, device_info, cps_override=None,
+                    duration_override=None):
+        """Executa o burn-in (config LSN + TRex + loop) e devolve a nova
+        sessão cli (pós-erase) ou a mesma (interrupted)."""
+        trex_cfg = self.cfg.get("trex", {})
+
+        def do_erase():
+            self.notifier.info(self.device,
+                               "Factory reset pós-burn-in...")
+            t_reset = time.time()
+            self._factory_reset(cli)
+            new_cli = self._wait_and_login()
+            return self._wait_real_reboot(new_cli, since=t_reset)
+
+        trex = self.trex_cls(
+            path=trex_cfg.get("path", "/opt/trex/v3.08"),
+            daemon_args=tuple(trex_cfg.get("daemon_args",
+                                           ["-i", "--astf"])))
+        ctrl = BurninController(
+            cli=cli, serial=serial, device_info=device_info, trex=trex,
+            cfg=self.cfg, bus=self.bus, notifier=self.notifier,
+            device=self.device, port_path=self.port_path,
+            mailbox=self.mailbox, do_erase=do_erase,
+            cps_override=cps_override, duration_override=duration_override)
+        try:
+            res = ctrl.run()
+        except BurninAbort:
+            raise
+        except Exception as exc:
+            # falha na setup inicial do burn-in (ex.: template ausente =
+            # FileNotFoundError) escapa do fluxo sem veredito — como
+            # FlashError entra no retry/status existente do run()
+            raise FlashError(f"burn-in falhou: {exc}")
+        self._state = f"burnin_{res['verdict']}"
+        self._publish_status(result={
+            "summary": f"burn-in: {res['verdict']} — {res['reason']}"})
+        return res["new_cli"]
 
     def _collect_uptime(self, cli, serial):
         """`show version` -> uptime -> publica `uptime_sample` no bus.

@@ -2,15 +2,21 @@
 
 import os
 import sys
+import tempfile
+import threading
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from a10flash.bus import EventBus  # noqa: E402
+from a10flash.mailbox import Mailbox  # noqa: E402
 from a10flash.notify import Notifier  # noqa: E402
 from a10flash.power import PowerController  # noqa: E402
 from a10flash.worker import FlashWorker  # noqa: E402
 from a10flash.a10_cli import SerialA10  # noqa: E402
 from fake_axapi import FakeAxapiServer  # noqa: E402
 from fake_device import FakeA10  # noqa: E402
+from tests.fake_trex import FakeTRexClient  # noqa: E402
 
 
 def _fake_port_gone(fake):
@@ -90,6 +96,65 @@ def run_worker(cfg, fake, axapi=None):
     finally:
         os.path.exists = orig_exists
     return result, events
+
+
+def _axapi_sem_confirmacao(fake):
+    """AXAPI que 'perde a conexão' logo após aceitar o upgrade —
+    como quando a caixa reinicia sozinha (reboot-after-upgrade)."""
+
+    from a10flash.a10_axapi import AxapiError
+
+    class AxapiSemConfirmacao:
+        def __init__(self, *a, **k):
+            pass
+
+        def upgrade(self, **k):
+            # a caixa aplicou a imagem e reiniciou sozinha
+            fake.versions["primary"] = "4.1.4"
+            fake._do_reboot()
+            raise AxapiError(
+                "upgrade não confirmado: caixa não respondeu até o "
+                "timeout (provável reboot em andamento)")
+
+        def logoff(self):
+            pass
+
+    return AxapiSemConfirmacao
+
+
+# template LSN p/ o burn-in nos testes: o fake do ACOS não sabe a
+# notação de máscara do template real ("ip address X 255.255.255.252"
+# estoura o parse dele e mata a thread de respostas — o burn-in fica
+# sem console). Aqui a máscara sai em CIDR e o resto das linhas é
+# tolerado pelo fake (responde "Unknown command" sem marcador de erro).
+_LSN_TEMPLATE_TEST = """\
+interface ethernet {INSIDE_PORT}
+  enable
+  ip address 10.255.0.1/30
+  ip nat inside
+!
+interface ethernet {OUTSIDE_PORT}
+  enable
+  ip address 10.255.0.5/30
+  ip nat outside
+!
+ip route 100.64.0.0 /10 10.255.0.2
+cgnv6 nat pool lsn 203.0.113.1 203.0.113.254 netmask /24
+cgnv6 lsn inside source class-list CGN
+cgnv6 lsn-lid 1
+  respond-to-user-mac
+  source-nat-pool lsn
+end
+"""
+
+
+def _write_lsn_template():
+    """Template LSN em arquivo temporário (o cfg aponta `lsn_config`
+    para ele; caminho absoluto passa direto pelo `_repo_file`)."""
+    fd, path = tempfile.mkstemp(suffix=".conf")
+    with os.fdopen(fd, "w") as fh:
+        fh.write(_LSN_TEMPLATE_TEST)
+    return path
 
 
 def test_upgrade_flow_completo():
@@ -367,29 +432,8 @@ def test_upgrade_axapi_sem_confirmacao_segue_aguardando():
     """reboot_after_upgrade: se o polling perder a conexão (caixa
     reiniciando após instalar), o worker NÃO falha — segue para
     aguardar o login e confirma a versão nova."""
-    from a10flash.a10_axapi import AxapiError
-
     fake = FakeA10(version="4.0.0", booted="primary", mgmt_ip="10.0.0.10",
                    reboot_delay=0.5)
-
-    class AxapiSemConfirmacao:
-        """AXAPI que 'perde a conexão' logo após aceitar o upgrade —
-        como quando a caixa reinicia sozinha (reboot-after-upgrade)."""
-
-        def __init__(self, *a, **k):
-            pass
-
-        def upgrade(self, **k):
-            # a caixa aplicou a imagem e reiniciou sozinha
-            fake.versions["primary"] = "4.1.4"
-            fake._do_reboot()
-            raise AxapiError(
-                "upgrade não confirmado: caixa não respondeu até o "
-                "timeout (provável reboot em andamento)")
-
-        def logoff(self):
-            pass
-
     axapi = FakeAxapiServer(sw_version="4.1.4")
     orig_exists = os.path.exists
 
@@ -405,7 +449,7 @@ def test_upgrade_axapi_sem_confirmacao_segue_aguardando():
         notifier = Notifier(log_file=None)
         power = PowerController(cfg.get("power", {}), notifier)
         worker = FlashWorker(cfg, "fake-a10", fake.port, notifier, power,
-                             axapi_cls=AxapiSemConfirmacao,
+                             axapi_cls=_axapi_sem_confirmacao(fake),
                              axapi_base_override=axapi.base_url(),
                              on_event=_unplug_after_test_mode)
         result = worker.run()
@@ -514,6 +558,7 @@ def test_ciclo_completo_com_loading_pos_reset():
     espera ativamente sair do LOADING e a coleta salva os dados."""
     fake = FakeA10(version="4.0.0", booted="primary", mgmt_ip="10.0.0.10",
                    reboot_delay=0.5, loading_seconds=1.5)
+    fake.interfaces_count = 8   # brief com 20 portas truncado no pty do fake
     fake.next_versions = {"primary": "4.1.4"}
     axapi = FakeAxapiServer(sw_version="4.1.4")
     try:
@@ -1182,6 +1227,37 @@ def test_wait_ready_reloga_tela_de_senha():
         fake.close()
 
 
+def test_id_reusado_nao_reprocessa_caixa_processada():
+    """O owner do cache usa id(self) — e o CPython REUSA ids de objetos
+    mortos: um worker NOVO pode nascer com o MESMO owner de um worker
+    antigo já encerrado (mesmo pid). Isso NÃO pode ser tratado como
+    'mesma instância em retry' — caixa processada tem que pular sempre
+    (retry pós-marcação não existe mais: a marcação sai no FIM do ciclo,
+    depois do registro)."""
+    import tempfile
+    from a10flash.bus import EventBus
+    from a10flash.notify import Notifier
+    from a10flash.power import PowerController
+    from a10flash.state import ProcessedSerials
+
+    with tempfile.TemporaryDirectory() as tmp:
+        state_file = os.path.join(tmp, "processed_serials.json")
+        # caixa marcada por um worker ANTERIOR (já morto)
+        ProcessedSerials(state_file).mark("A10TH-OWN-1",
+                                          port="/dev/ttyUSB9",
+                                          owner="12345:999999")
+        cfg = make_cfg(monitor={"state_file": state_file})
+        notifier = Notifier(log_file=None)
+        power = PowerController(cfg.get("power", {}), notifier)
+        bus = EventBus()
+        w = FlashWorker(cfg, "fake-a10", "/dev/null", notifier, power,
+                        bus=bus)
+        # o id() do objeto morto foi reusado: mesmo owner do cache
+        w._owner = "12345:999999"
+        assert w._skip_if_processed("A10TH-OWN-1", "4.1.4") is True, \
+            "worker novo com owner reusado deve PULAR a caixa processada"
+
+
 def test_falha_no_ciclo_nao_marca_caixa_no_cache():
     """Se o ciclo FALHA antes de registrar no DB, a caixa NÃO entra no
     processed_serials.json — um re-plugue reprocessa (e registra) em vez
@@ -1418,6 +1494,7 @@ def test_skip_republica_registro_no_bus():
                        mgmt_ip="10.0.0.10", reboot_delay=0.5,
                        serial="A10TH-LOOP-010")
         axapi = FakeAxapiServer(sw_version="4.1.4")
+        orig_exists = os.path.exists   # _fake_port_gone patcheia — restaura
         try:
             notifier = Notifier(log_file=None)
             power = PowerController(cfg.get("power", {}), notifier)
@@ -1457,5 +1534,284 @@ def test_skip_republica_registro_no_bus():
             assert found["serial"] == "A10TH-LOOP-010"
             fake2.close()
         finally:
+            os.path.exists = orig_exists   # desfaz o patch do _fake_port_gone
             axapi.stop()
             fake.close()
+
+
+# -------------------------------------------------- burn-in (E2E)
+def test_ciclo_com_burnin_automatico_pass():
+    """Ciclo completo + burn-in curto (duração minúscula no cfg) -> pass."""
+    # 8 portas: com 20 o fake estoura o buffer do pty (write único
+    # não-bloqueante) e o "show interfaces brief" do burn-in não recebe
+    # o prompt -> timeout. 8 portas = resposta ~550B, cabe tranquilo.
+    fake = FakeA10()
+    fake.interfaces_count = 8
+    axapi = FakeAxapiServer(sw_version="4.1.4")
+    orig_exists = os.path.exists
+
+    def _unplug_after_test_mode(dev, stage, detail):
+        # o burn-in termina ANTES do evento test_mode (erase -> modo
+        # teste) — o hook continua válido: despluga na entrada do modo
+        if detail == "test_mode":
+            os.path.exists = lambda p: (False if p == fake.port
+                                        else orig_exists(p))
+
+    lsn_template = _write_lsn_template()
+    try:
+        cfg = make_cfg(device={"reboot_after_upgrade": True},
+                       trex={"enabled": True, "duration_h": 0.001,
+                             "sample_interval_s": 1, "cps": 10,
+                             "path": "/opt/trex/v3.08",
+                             "lsn_config": lsn_template})
+        notifier = Notifier(log_file=None)
+        power = PowerController(cfg.get("power", {}), notifier)
+        bus = EventBus()
+        trex = FakeTRexClient()
+        worker = FlashWorker(cfg, "fake-a10", fake.port, notifier, power,
+                             axapi_cls=_axapi_sem_confirmacao(fake),
+                             axapi_base_override=axapi.base_url(),
+                             trex_cls=lambda **k: trex, bus=bus,
+                             on_event=_unplug_after_test_mode)
+        result = worker.run()
+        assert result["status"] == "success", result
+        assert result["test_mode"] is True
+        events = bus.history()
+        started = [e for e in events if e.get("type") == "burnin_started"]
+        finished = [e for e in events
+                    if e.get("type") == "burnin_result"]
+        assert len(started) == 1 and started[0]["cps"] == 10
+        assert finished and finished[0]["verdict"] == "pass"
+        assert trex.start_traffic_called is True
+        assert trex.profile_seen.endswith("trex/astf/a10_astf.py")
+    finally:
+        os.path.exists = orig_exists
+        axapi.stop()
+        fake.close()
+        os.unlink(lsn_template)
+
+
+def test_ciclo_com_burnin_reboot_fail():
+    """A caixa reinicia no meio do burn-in -> fail + erase + modo teste."""
+    fake = FakeA10()
+    fake.interfaces_count = 8   # ver comentário no teste do pass
+    axapi = FakeAxapiServer(sw_version="4.1.4")
+    orig_exists = os.path.exists
+
+    def _unplug_after_test_mode(dev, stage, detail):
+        if detail == "test_mode":
+            os.path.exists = lambda p: (False if p == fake.port
+                                        else orig_exists(p))
+
+    def _reboot_mid_burnin():
+        # espera o burn-in começar (start_traffic): o sleep fixo do
+        # plano (2s) caía ANTES do burn-in (o ciclo pré-burn-in leva
+        # ~4-5s: login + retrato + erase + reboot) — sem isso a caixa
+        # já tinha rebootado quando o burn-in começou e o veredito
+        # virava pass. Aqui o reboot cai DENTRO do loop de observação.
+        while not trex.start_traffic_called:
+            time.sleep(0.05)
+        # o erase do ciclo já zera o uptime do fake — sem uma leitura
+        # ALTA primeiro, o fail `up < last_uptime` não tem de onde
+        # despencar (0 nunca é menor que 0). Então o reboot simulado
+        # começa "no ar" (uptime alto pós-burn-in curto) e cai logo em
+        # seguida para ~0, como o observador vê uma caixa que
+        # reiniciou. O `_do_reboot` real do fake DERRUBA o console
+        # (volta ao login) e o `show version` do controller esperaria
+        # 30s de timeout nessa tela — uptime pós-reboot ~30s, ACIMA
+        # do último sample: o fail nunca dispararia num burn-in curto.
+        fake.uptime_s = 100000
+        time.sleep(1.5)
+        fake._booted_at = time.time()
+        fake.uptime_s = 0
+
+    lsn_template = _write_lsn_template()
+    try:
+        cfg = make_cfg(device={"reboot_after_upgrade": True},
+                       trex={"enabled": True, "duration_h": 0.005,
+                             "sample_interval_s": 1, "cps": 10,
+                             "path": "/opt/trex/v3.08",
+                             "lsn_config": lsn_template})
+        notifier = Notifier(log_file=None)
+        power = PowerController(cfg.get("power", {}), notifier)
+        bus = EventBus()
+        trex = FakeTRexClient()
+        t = threading.Thread(target=_reboot_mid_burnin, daemon=True)
+        t.start()
+        worker = FlashWorker(cfg, "fake-a10", fake.port, notifier, power,
+                             axapi_cls=_axapi_sem_confirmacao(fake),
+                             axapi_base_override=axapi.base_url(),
+                             trex_cls=lambda **k: trex, bus=bus,
+                             on_event=_unplug_after_test_mode)
+        result = worker.run()
+        t.join(timeout=5)
+        assert result["status"] == "success", result
+        finished = [e for e in bus.history()
+                    if e.get("type") == "burnin_result"]
+        assert finished and finished[0]["verdict"] == "fail"
+        assert "reiniciou" in finished[0]["reason"]
+    finally:
+        os.path.exists = orig_exists
+        axapi.stop()
+        fake.close()
+        os.unlink(lsn_template)
+
+
+def test_burnin_stop_via_mailbox_aborta_com_erase():
+    fake = FakeA10()
+    fake.interfaces_count = 8   # ver comentário no teste do pass
+    axapi = FakeAxapiServer(sw_version="4.1.4")
+    orig_exists = os.path.exists
+
+    def _unplug_after_test_mode(dev, stage, detail):
+        if detail == "test_mode":
+            os.path.exists = lambda p: (False if p == fake.port
+                                        else orig_exists(p))
+
+    mailbox = Mailbox()
+
+    def _send_stop():
+        # espera o burn-in começar (start_traffic): com o sleep fixo do
+        # plano (2s) o comando caía ANTES do burn-in e era drenado
+        # pelos _check_commands do ciclo (perdido). Aqui o comando
+        # chega com o loop de observação já rodando (drain a cada ~1s)
+        # e o controller decide aborted + erase.
+        while not trex.start_traffic_called:
+            time.sleep(0.05)
+        time.sleep(0.5)
+        mailbox.send({"command": "burnin_stop"})
+
+    lsn_template = _write_lsn_template()
+    try:
+        cfg = make_cfg(device={"reboot_after_upgrade": True},
+                       trex={"enabled": True, "duration_h": 0.005,
+                             "sample_interval_s": 1, "cps": 10,
+                             "path": "/opt/trex/v3.08",
+                             "lsn_config": lsn_template})
+        notifier = Notifier(log_file=None)
+        power = PowerController(cfg.get("power", {}), notifier)
+        bus = EventBus()
+        trex = FakeTRexClient()
+        t = threading.Thread(target=_send_stop, daemon=True)
+        t.start()
+        worker = FlashWorker(cfg, "fake-a10", fake.port, notifier, power,
+                             axapi_cls=_axapi_sem_confirmacao(fake),
+                             axapi_base_override=axapi.base_url(),
+                             trex_cls=lambda **k: trex, bus=bus,
+                             mailbox=mailbox,
+                             on_event=_unplug_after_test_mode)
+        result = worker.run()
+        t.join(timeout=5)
+        assert result["status"] == "success", result
+        finished = [e for e in bus.history()
+                    if e.get("type") == "burnin_result"]
+        assert finished and finished[0]["verdict"] == "aborted"
+    finally:
+        os.path.exists = orig_exists
+        axapi.stop()
+        fake.close()
+        os.unlink(lsn_template)
+
+
+def test_burnin_config_rejeitada_nao_roda_trafico():
+    fake = FakeA10()
+    fake.bad_config_lines = {"ip nat inside"}
+    fake.interfaces_count = 8   # ver comentário no teste do pass
+    axapi = FakeAxapiServer(sw_version="4.1.4")
+    orig_exists = os.path.exists
+
+    def _unplug_after_test_mode(dev, stage, detail):
+        if detail == "test_mode":
+            os.path.exists = lambda p: (False if p == fake.port
+                                        else orig_exists(p))
+
+    lsn_template = _write_lsn_template()
+    try:
+        cfg = make_cfg(device={"reboot_after_upgrade": True},
+                       trex={"enabled": True, "duration_h": 0.001,
+                             "sample_interval_s": 1, "cps": 10,
+                             "path": "/opt/trex/v3.08",
+                             "lsn_config": lsn_template})
+        notifier = Notifier(log_file=None)
+        power = PowerController(cfg.get("power", {}), notifier)
+        bus = EventBus()
+        trex = FakeTRexClient()
+        worker = FlashWorker(cfg, "fake-a10", fake.port, notifier, power,
+                             axapi_cls=_axapi_sem_confirmacao(fake),
+                             axapi_base_override=axapi.base_url(),
+                             trex_cls=lambda **k: trex, bus=bus,
+                             on_event=_unplug_after_test_mode)
+        result = worker.run()
+        assert result["status"] == "success", result
+        assert trex.start_traffic_called is False
+        finished = [e for e in bus.history()
+                    if e.get("type") == "burnin_result"]
+        assert finished and finished[0]["verdict"] == "aborted"
+        # o template renderiza "  ip nat inside " (espaços do arquivo) —
+        # o controller reporta a linha bruta rejeitada pelo ACOS
+        assert [c.strip() for c in finished[0]["config_errors"]] \
+            == ["ip nat inside"]
+    finally:
+        os.path.exists = orig_exists
+        axapi.stop()
+        fake.close()
+        os.unlink(lsn_template)
+
+
+def test_burnin_start_manual_via_mailbox():
+    """burnin_start manual: comando chega pela mailbox ANTES/na entrada do
+    modo teste (caminho deferido) -> burn-in roda -> erase -> volta ao modo
+    teste. Unplug determinístico no SEGUNDO evento test_mode (o primeiro é a
+    entrada inicial, o segundo é a re-entrada pós-burn-in)."""
+    fake = FakeA10()
+    fake.interfaces_count = 8   # brief com 20 portas truncado no pty do fake
+    axapi = FakeAxapiServer(sw_version="4.1.4")
+    orig_exists = os.path.exists
+    seen = [0]
+
+    def _unplug_on_second_test_mode(dev, stage, detail):
+        if detail == "test_mode":
+            seen[0] += 1
+            if seen[0] >= 2:
+                os.path.exists = lambda p: (False if p == fake.port
+                                            else orig_exists(p))
+
+    mailbox = Mailbox()
+
+    def _send_start():
+        time.sleep(2.0)
+        mailbox.send({"command": "burnin_start", "cps": 20})
+
+    lsn_template = _write_lsn_template()
+    try:
+        cfg = make_cfg(device={"reboot_after_upgrade": True},
+                       trex={"enabled": False, "duration_h": 0.001,
+                             "sample_interval_s": 1, "cps": 10,
+                             "path": "/opt/trex/v3.08",
+                             "lsn_config": lsn_template})
+        notifier = Notifier(log_file=None)
+        power = PowerController(cfg.get("power", {}), notifier)
+        bus = EventBus()
+        trex = FakeTRexClient()
+        t = threading.Thread(target=_send_start, daemon=True)
+        t.start()
+        worker = FlashWorker(cfg, "fake-a10", fake.port, notifier, power,
+                             axapi_cls=_axapi_sem_confirmacao(fake),
+                             axapi_base_override=axapi.base_url(),
+                             trex_cls=lambda **k: trex, bus=bus,
+                             mailbox=mailbox,
+                             on_event=_unplug_on_second_test_mode)
+        result = worker.run()
+        t.join(timeout=5)
+        assert result["status"] == "success", result
+        started = [e for e in bus.history()
+                   if e.get("type") == "burnin_started"]
+        finished = [e for e in bus.history()
+                    if e.get("type") == "burnin_result"]
+        assert len(started) == 1 and started[0]["cps"] == 20
+        assert finished and finished[0]["verdict"] == "pass"
+    finally:
+        os.path.exists = orig_exists
+        axapi.stop()
+        fake.close()
+        os.unlink(lsn_template)

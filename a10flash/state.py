@@ -66,9 +66,10 @@ class ProcessedSerials:
     def processed_by_owner(self, serial):
         """Instância do worker que processou o serial ("" se desconhecida).
 
-        O `owner` identifica a instância do FlashWorker (pid+id): o
-        RETRY do MESMO worker não se auto-bloqueia, mas QUALQUER outro
-        worker (mesma porta, re-plugue, daemon reiniciado) pula.
+        Metadata apenas: o skip NÃO consulta o owner — id(self) pode ser
+        reusado por outro worker e o pid+id não identifica instância de
+        forma estável (a marcação sai no FIM do ciclo, então não existe
+        retry do mesmo worker depois da marcação).
         """
         if not serial:
             return ""
