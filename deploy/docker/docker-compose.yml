@@ -26,6 +26,12 @@ services:
       dockerfile: deploy/docker/Dockerfile
     container_name: a10-flasher-portal
     restart: unless-stopped
+    # Workaround para Docker recente em kernel antigo: o perfil seccomp
+    # default falha com 'error loading seccomp filter into kernel:
+    # errno 524'. Remove a camada seccomp SÓ deste serviço (o isolamento
+    # restante — usuário sem privilégios, rede, volumes — continua).
+    security_opt:
+      - seccomp:unconfined
     environment:
       PORTAL_TOKEN: ${PORTAL_TOKEN:-}
       PORTAL_HOST: 0.0.0.0
