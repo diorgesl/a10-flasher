@@ -358,10 +358,13 @@ class FlashWorker:
                 self.device,
                 "Coletando retrato do equipamento (serial + shows)...")
             device_info = self._collect_device_info(cli)
-            # identidade no card do dashboard (modelo/serial daquela
+            # identidade no card do dashboard (modelo/serial/IP daquela
             # porta) — coletada junto com o retrato, antes das ações
             self._serial = (device_info.get("serial") or "").strip() or None
             self._model = device_info.get("model") or None
+            self._mgmt_ip = device_info.get("mgmt_ip") or None
+            if self._mgmt_ip == MGMT_IP_LEGADO:
+                self._mgmt_ip = None  # legado da bancada antiga não conta
 
             # anti-loop: caixa já processada -> pula as AÇÕES
             # DESTRUTIVAS, mas entra no modo teste mesmo assim — a caixa
@@ -1161,6 +1164,12 @@ class FlashWorker:
 
         _try("serial", cli.get_serial, "serial")
         _try("modelo", cli.get_model, "model")
+        # IP de gerência (DHCP) — vai pro card do dashboard; o caminho
+        # "skip" (caixa já processada) não passa pelo _ensure_mgmt_ip
+        _try("IP de gerência",
+             lambda timeout: (cli.get_mgmt_ip(timeout=timeout)
+                              or (None, 0))[0],
+             "mgmt_ip")
         _try("show version",
              lambda timeout: cli.cmd("show version", timeout=timeout),
              "version_output")
