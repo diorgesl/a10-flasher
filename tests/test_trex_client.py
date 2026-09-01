@@ -137,8 +137,10 @@ def test_start_traffic_loads_profile_with_cps():
     c.start_traffic("trex/astf/a10_astf.py", 1000, 87000)
     assert fake.calls[0] == "connect"
     assert fake.calls[1] == "reset"
+    # tunables é DICT na lib ASTF (o load_profile faz **tunables e a lib
+    # converte para ['--cps', '1000'] antes do argparse do profile)
     assert fake.calls[2] == ("load_profile", "trex/astf/a10_astf.py",
-                             ["--cps", "1000"])
+                             {"cps": 1000})
     assert fake.calls[3] == ("start", 87000)
 
 

@@ -89,6 +89,11 @@ acompanhamento e registro dos equipamentos.
    sys.modules) e a mensagem de erro distingue "não encontrada"
    (trex.path errado) de "import falhou" (lista as dependências a
    instalar e cita `legacy-cgi` no Python 3.13).
+   **`load_profile` espera `tunables` como DICT**: o client ASTF faz
+   `ASTFProfile.load(path, **tunables)` — passar lista (`["--cps",
+   "1000"]`) quebra com "argument after ** must be a mapping, not
+   list". Passe `{"cps": N}`; a própria lib converte para
+   `["--cps", "N"]` antes do argparse do profile (a10_astf.py).
    CAIXA RECÉM-RESETADA: interfaces vêm DESATIVADAS e o brief não
    mostra portas utilizáveis — o setup ATIVA as portas declaradas no
    template (`_template_ports`, fallback 1..14; `configure terminal` +

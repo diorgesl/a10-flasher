@@ -259,8 +259,10 @@ class TRexClient:
         por `duration` segundos (idempotente no daemon: reusa se já
         estiver rodando)."""
         client = self._connect()
-        profile = client.load_profile(profile_path,
-                                      tunables=["--cps", str(cps)])
+        # tunables é DICT na lib ASTF (`ASTFProfile.load(path, **tunables)`):
+        # lista aqui vira TypeError "argument after ** must be a mapping".
+        # A lib converte {"cps": N} em ["--cps", "N"] antes do argparse.
+        profile = client.load_profile(profile_path, tunables={"cps": cps})
         client.start(profile, duration=duration)
         self._last = None  # primeira amostra de taxa é zero
 
