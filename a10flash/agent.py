@@ -18,6 +18,12 @@ import urllib.parse
 # Branch que o lab puxa na atualização de código (auto-update / comando
 # `update` do portal). O sistema roda a partir do main do repositório.
 GIT_BRANCH = "origin/main"
+# Sonda de saúde do ws quando o bus está quieto (ver _forward): sem ela
+# o _forward preso em q.get só notava a morte do portal quando o bus
+# emitia algo (modo teste pode ficar 1h em silêncio) e a reconexão
+# nunca acontecia com o lab ocioso.
+WS_PROBE_INTERVAL = 10.0
+WS_PROBE_TIMEOUT = 5.0  # pong não veio neste tempo = conexão ruim
 # Raiz do repositório (onde o código ESTÁ rodando) — o git roda AQUI,
 # independente do cwd de quem iniciou o processo (fetch já falhou com
 # exit 128 quando o agente subia de outro diretório: "not a git repo").
@@ -41,6 +47,11 @@ class AgentClient:
         self._stop = threading.Event()
         self._ws = None
         self._lock = threading.Lock()
+        # identidade (serial/model/mgmt_ip) vista nos eventos do bus por
+        # dispositivo — o monitor não a guarda, e sem este cache o hello
+        # da reconexão voltaria ao portal SEM identidade (o card ficaria
+        # sem modelo/serial/IP até o próximo status do worker)
+        self._ident = {}
         self._thread = threading.Thread(target=self._run, daemon=True,
                                         name="agent-client")
 
@@ -132,7 +143,13 @@ class AgentClient:
     def _sync_devices(self):
         if self.monitor is None:
             return {}
-        return self.monitor.device_statuses()
+        out = {}
+        for key, st in self.monitor.device_statuses().items():
+            # o monitor só agrega estágio; a identidade vem do cache de
+            # eventos do bus (serial/model/mgmt_ip sobrevivem à
+            # reconexão com o portal)
+            out[key] = {**self._ident.get(key, {}), **st}
+        return out
 
     # ---------------------------------------------------------- leitura
     def _reader(self, ws):
@@ -278,12 +295,32 @@ class AgentClient:
     # ----------------------------------------------------------- envio
     def _forward(self, ws):
         sid, q = self.bus.subscribe()
+        last_probe = time.monotonic()
         try:
             while not self._stop.is_set():
                 try:
                     event = q.get(timeout=1.0)
                 except queue.Empty:
+                    # lab quieto: sonda o ws (ping de protocolo — o
+                    # servidor responde pong sem tocar no app). Falhou =
+                    # portal caiu: sai para o loop de reconexão agir.
+                    if time.monotonic() - last_probe >= WS_PROBE_INTERVAL:
+                        try:
+                            if not ws.ping().wait(WS_PROBE_TIMEOUT):
+                                return
+                        except Exception:
+                            return
+                        last_probe = time.monotonic()
                     continue
+                if event.get("type") in ("status", "device_result"):
+                    # guarda a identidade vista no bus para o hello da
+                    # reconexão levar junto (ver _sync_devices)
+                    ident = {k: event[k] for k in ("serial", "model",
+                                                   "mgmt_ip")
+                             if event.get(k)}
+                    if ident:
+                        self._ident.setdefault(
+                            event["device"], {}).update(ident)
                 try:
                     ws.send(json.dumps(event))
                 except Exception:

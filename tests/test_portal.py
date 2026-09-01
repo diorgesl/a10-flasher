@@ -703,3 +703,82 @@ def test_status_ws_preserva_identidade_no_card():
     assert card["serial"] == "TH30B23316450072"
     assert card["model"] == "TH4430S"
     assert card["mgmt_ip"] == "10.0.0.77"
+
+
+# ------------------------------------------------- reconexão do agente
+class _WsVivo:
+    """WS fake: responde pong (Event setado) e aceita sends."""
+
+    def ping(self):
+        ev = threading.Event()
+        ev.set()
+        return ev
+
+    def send(self, data):
+        return None
+
+
+class _WsMorto:
+    """WS fake: portal morto — qualquer toque falha."""
+
+    def ping(self):
+        raise ConnectionError("portal morto")
+
+    def send(self, data):
+        raise ConnectionError("portal morto")
+
+
+def test_agent_forward_sonda_ws_em_bus_quieto(monkeypatch):
+    """Lab quieto: o _forward preso em q.get não pode ficar cego à morte
+    do portal — a sonda (ping de protocolo) faz o loop reconectar."""
+    import a10flash.agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "WS_PROBE_INTERVAL", 0.05)
+    monkeypatch.setattr(agent_mod, "WS_PROBE_TIMEOUT", 0.2)
+    bus = EventBus()
+    ag = AgentClient(url="ws://127.0.0.1:1", token="x", bus=bus,
+                     monitor=None, agent_id="lab-1")
+    # ws morto: a sonda falha e o _forward retorna sozinho
+    t = threading.Thread(target=ag._forward, args=(_WsMorto(),), daemon=True)
+    t.start()
+    t.join(timeout=3)
+    assert not t.is_alive(), "_forward deveria retornar com o ws morto"
+    # ws vivo: a sonda responde e o _forward permanece até o stop
+    t2 = threading.Thread(target=ag._forward, args=(_WsVivo(),), daemon=True)
+    t2.start()
+    time.sleep(0.3)
+    assert t2.is_alive(), "_forward não deveria retornar com o ws vivo"
+    ag.stop()
+    t2.join(timeout=2)
+    assert not t2.is_alive()
+
+
+def test_agent_hello_carrega_identidade_do_bus():
+    """Reconexão: o hello leva serial/model/mgmt_ip que já passaram pelo
+    bus — sem isso o card volta sem identidade até o próximo status do
+    worker (no modo teste pode ser 1h)."""
+
+    class _MonIdent:
+        def device_statuses(self):
+            return {"ttyUSB1": {"device": "ttyUSB1", "state": "running",
+                                "stage": "burnin"}}
+
+    bus = EventBus()
+    ag = AgentClient(url="ws://127.0.0.1:1", token="x", bus=bus,
+                     monitor=_MonIdent(), agent_id="lab-1")
+    t = threading.Thread(target=ag._forward, args=(_WsVivo(),), daemon=True)
+    t.start()
+    time.sleep(0.2)  # deixa o _forward assinar o bus
+    # o worker publicou um status com identidade (como faz no ciclo)
+    bus.publish({"type": "status", "device": "ttyUSB1",
+                 "serial": "TH30B23316450072", "model": "TH4430S",
+                 "mgmt_ip": "10.0.0.77", "stage": "burnin"})
+    time.sleep(0.3)
+    ag.stop()
+    t.join(timeout=2)
+    devices = ag._sync_devices()
+    assert devices["ttyUSB1"]["serial"] == "TH30B23316450072"
+    assert devices["ttyUSB1"]["model"] == "TH4430S"
+    assert devices["ttyUSB1"]["mgmt_ip"] == "10.0.0.77"
+    # o estágio do monitor é preservado na mescla
+    assert devices["ttyUSB1"]["stage"] == "burnin"

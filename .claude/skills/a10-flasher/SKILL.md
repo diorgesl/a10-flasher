@@ -234,6 +234,25 @@ acompanhamento e registro dos equipamentos.
   - `threading.Lock` em todas as operações (handlers rodam em threads
     diferentes); `bool(upgraded)` na leitura (SQLite devolve int).
 
+## Card do dashboard — identidade e reconexão (pitfalls)
+
+- **`_track` do portal copia só uma WHITELIST de campos** para o retrato
+  do dispositivo: `serial`/`model`/`mgmt_ip` precisam estar nela, senão o
+  worker coleta e publica a identidade no bus mas o card mostra "—"
+  (parecia "zerar" durante o burn-in — na verdade nunca chegava). O
+  `setdefault` recria a entrada sem identidade a cada evento.
+- **Reconexão do agente**: o `_forward` (preso em `q.get` no bus) só
+  notava a morte do portal quando o bus emitia algo — lab quieto (modo
+  teste, 1h sem status) = agente preso como "conectado" para sempre. A
+  sonda `ws.ping()` de protocolo a cada ~10s (`WS_PROBE_INTERVAL`) resolve;
+  o ping NÃO precisa de JSON — o servidor responde pong na camada WS, o
+  `_reader` processa.
+- **Identidade no hello da reconexão**: o monitor não agrega
+  serial/model/mgmt_ip (só stage/state) — o agente mantém um cache
+  (`_ident`) do que passou pelo bus nos eventos `status`/`device_result`
+  e mescla em `_sync_devices()`. Sem isso o card volta sem identidade até
+  o próximo status do worker.
+
 ## Testes (~50+, suíte completa 7–9 min → rodar em background)
 
 - Worker E2E: pty real (`FakeA10`) + `FakeAxapiServer` (HTTP real);

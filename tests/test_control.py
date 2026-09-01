@@ -262,7 +262,7 @@ def test_erro_de_console_no_ciclo_entra_no_retry():
         def open_and_login(self, **kwargs):
             pass
 
-        def wait_ready(self, timeout=None, on_wait=None):
+        def wait_ready(self, timeout=None, on_wait=None, on_loading=None):
             return True
 
         def get_version(self, timeout=None):
