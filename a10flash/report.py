@@ -234,21 +234,28 @@ def _normaliza_kpis(kpis, record, runs):
     """Ajusta os KPIs do LLM para os valores mais informativos.
 
     - KPI de uptime vira "Uptime registrado em teste";
-    - KPI de carga vira "Carga testada" com a duração em horas
-      (mais claro para quem lê do que o cps aplicado);
+    - KPI de carga vira "Carga testada" com o tráfego do teste e a
+      duração em horas (ex.: "Tráfego de 1.20 Gbps por 24 horas" —
+      mais claro para quem lê do que o cps aplicado);
     - KPI de interfaces é trocado pelo modelo (as interfaces já são
       detalhadas na seção própria).
     """
     out = [dict(k) for k in (kpis or []) if isinstance(k, dict)][:4]
     modelo = (record or {}).get("model")
     duracao = runs[0].get("duration_h") if runs else None
+    trafego = ((runs[0].get("traffic") or {}).get("tx_bps")
+               if runs else None)
     for kpi in out:
         rotulo = (kpi.get("rotulo") or "").lower()
         if "uptime" in rotulo:
             kpi["rotulo"] = "Uptime registrado em teste"
         elif "carga" in rotulo:
             kpi["rotulo"] = "Carga testada"
-            if duracao is not None:
+            if duracao is not None and trafego is not None:
+                horas = "hora" if int(duracao) == 1 else "horas"
+                kpi["valor"] = (f"Tráfego de {_fmt_bps(trafego)} "
+                                f"por {_fmt_num(duracao)} {horas}")
+            elif duracao is not None:
                 kpi["valor"] = f"{_fmt_num(duracao)} horas"
         elif "interfaces" in rotulo or "portas" in rotulo:
             kpi["rotulo"] = "Modelo"
@@ -537,8 +544,20 @@ class _CardKpi(Flowable):
         c.drawString(4 * mm, self.height - 5.6 * mm,
                      _texto(self.rotulo)[:34])
         c.setFillColor(_AZUL)
-        c.setFont(_FONTE_B, 12)
-        c.drawString(4 * mm, 2.6 * mm, _texto(self.valor)[:26])
+        valor = _texto(self.valor)
+        # a frase inteira precisa caber (o card tem ~227pt úteis com os
+        # paddings da tabela) — encolhe a fonte até o mínimo antes de
+        # truncar com "…"
+        larg_max = self.width - 7 * mm  # insets + espaço do check
+        tam = 12
+        while tam > 9 and c.stringWidth(valor, _FONTE_B, tam) > larg_max:
+            tam -= 0.5
+        if c.stringWidth(valor, _FONTE_B, tam) > larg_max:
+            while valor and c.stringWidth(valor + "…", _FONTE_B, tam) > larg_max:
+                valor = valor[:-1]
+            valor += "…"
+        c.setFont(_FONTE_B, tam)
+        c.drawString(4 * mm, 2.6 * mm, valor)
 
 
 class _FaixaSecao(Flowable):

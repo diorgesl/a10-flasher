@@ -237,9 +237,9 @@ def test_fmt_uptime_formato_acos():
     assert report._fmt_uptime(None) is None
 
 
-def test_normaliza_kpis_carga_vira_duracao_e_interfaces_vira_modelo():
-    """KPI de carga vira a duração testada em horas (não cps/Gbps), o de
-    interfaces é trocado pelo modelo e o de uptime ganha o rótulo do
+def test_normaliza_kpis_carga_vira_trafego_e_interfaces_vira_modelo():
+    """KPI de carga vira o tráfego testado com duração (não cps/Gbps), o
+    de interfaces é trocado pelo modelo e o de uptime ganha o rótulo do
     modo teste."""
     kpis = [
         {"rotulo": "Carga TRex", "valor": "10000 cps"},
@@ -248,12 +248,21 @@ def test_normaliza_kpis_carga_vira_duracao_e_interfaces_vira_modelo():
         {"rotulo": "Licenças", "valor": "Ativa"},
     ]
     record = {"model": "TH5430S"}
-    runs = [{"duration_h": 24.0}]
+    runs = [{"duration_h": 24.0, "traffic": {"tx_bps": 1200000000}}]
     out = report._normaliza_kpis(kpis, record, runs)
-    assert out[0] == {"rotulo": "Carga testada", "valor": "24 horas"}
+    assert out[0] == {"rotulo": "Carga testada",
+                      "valor": "Tráfego de 1.20 Gbps por 24 horas"}
     assert out[1] == {"rotulo": "Modelo", "valor": "TH5430S"}
     assert out[2] == {"rotulo": "Uptime registrado em teste", "valor": "12d"}
     assert out[3]["rotulo"] == "Licenças"  # inalterado
+
+
+def test_normaliza_kpis_carga_1_hora_no_singular():
+    """Duração de 1h -> 'por 1 hora' (sem o 's')."""
+    out = report._normaliza_kpis(
+        [{"rotulo": "Carga máxima", "valor": "x"}], {},
+        [{"duration_h": 1.0, "traffic": {"tx_bps": 2000000000}}])
+    assert out[0]["valor"] == "Tráfego de 2.00 Gbps por 1 hora"
 
 
 def test_normaliza_kpis_sem_duracao_mantem_valor_do_llm():
