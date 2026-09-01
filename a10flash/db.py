@@ -208,6 +208,15 @@ class DeviceStore:
         if not run_id:
             return None
         with self._lock:
+            # Um burn-in por vez por caixa: encerra qualquer run ativo
+            # anterior — o burnin_result dele pode ter se perdido (portal
+            # reiniciou/agente caiu no fim do run) e não pode bloquear o
+            # próximo nem manter o botão de parar para sempre.
+            self._conn.execute(
+                "UPDATE burnin_runs SET ended_ts = ?, verdict = 'aborted', "
+                "reason = 'substituído por novo burn-in', summary = '' "
+                "WHERE serial = ? AND ended_ts IS NULL",
+                (started_ts, (serial or "").strip()))
             self._conn.execute(
                 "INSERT OR REPLACE INTO burnin_runs (run_id, serial, "
                 "device, started_ts, duration_h, cps, verdict, reason, "
@@ -281,6 +290,37 @@ class DeviceStore:
                 "SELECT * FROM burnin_runs WHERE ended_ts IS NULL "
                 "ORDER BY started_ts DESC").fetchall()
         return [dict(r) for r in rows]
+
+    def finish_active_burnins(self, serial, verdict, reason, ended_ts):
+        """Escape hatch do portal: encerra no DB os runs ativos da caixa
+        (o burnin_result se perdeu — ex.: portal reiniciou no fim do run)
+        e destrava start/stop. Devolve os runs encerrados."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM burnin_runs WHERE serial = ? "
+                "AND ended_ts IS NULL",
+                ((serial or "").strip(),)).fetchall()
+            if rows:
+                self._conn.execute(
+                    "UPDATE burnin_runs SET ended_ts = ?, verdict = ?, "
+                    "reason = ?, summary = 'encerrado manualmente no portal' "
+                    "WHERE serial = ? AND ended_ts IS NULL",
+                    (ended_ts, verdict, reason or "",
+                     (serial or "").strip()))
+                self._conn.commit()
+        return [dict(r) for r in rows]
+
+    def delete_burnin_history(self, serial):
+        """Apaga todo o histórico de burn-in da caixa (runs + amostras)."""
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM burnin_samples WHERE serial = ?",
+                ((serial or "").strip(),))
+            cur = self._conn.execute(
+                "DELETE FROM burnin_runs WHERE serial = ?",
+                ((serial or "").strip(),))
+            self._conn.commit()
+        return cur.rowcount
 
     def count(self):
         with self._lock:

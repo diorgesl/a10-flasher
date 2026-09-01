@@ -579,6 +579,81 @@ def test_rest_burnin_stop_sem_run_409():
     assert r.status_code == 409
 
 
+def test_rest_burnin_force_stop_encerra_run_preso():
+    """Escape hatch: run órfã (burnin_result perdido) é encerrada no DB
+    e o portal volta a permitir start/stop."""
+    portal = make_portal()
+    client = TestClient(portal.app)
+    portal.store.upsert(serial="SER-1", device_key="dev-a")
+    portal.store.start_burnin_run("run-1", "SER-1", "dev-a", 1000,
+                                  24, time.time())
+    r = client.post("/api/devices/SER-1/burnin/force_stop",
+                    headers={"X-Token": "segredo"})
+    assert r.status_code == 200, r.text
+    assert "1 run(s) encerrado(s) no portal" in r.json()["message"]
+    assert portal.store.active_burnin("SER-1") is None
+    runs = portal.store.list_burnin_runs("SER-1")
+    assert runs[0]["verdict"] == "aborted"
+    assert "portal" in runs[0]["reason"]
+
+
+def test_rest_burnin_force_stop_idempotente_sem_run():
+    portal = make_portal()
+    client = TestClient(portal.app)
+    portal.store.upsert(serial="SER-1", device_key="dev-a")
+    r = client.post("/api/devices/SER-1/burnin/force_stop",
+                    headers={"X-Token": "segredo"})
+    assert r.status_code == 200, r.text
+    assert "nenhum burn-in ativo" in r.json()["message"]
+
+
+def test_rest_burnin_force_stop_sem_registro_404():
+    portal = make_portal()
+    client = TestClient(portal.app)
+    r = client.post("/api/devices/SER-X/burnin/force_stop",
+                    headers={"X-Token": "segredo"})
+    assert r.status_code == 404
+
+
+def test_rest_burnin_delete_apaga_historico():
+    portal = make_portal()
+    client = TestClient(portal.app)
+    portal.store.upsert(serial="SER-1", device_key="dev-a")
+    portal.store.start_burnin_run("run-1", "SER-1", "dev-a", 1000,
+                                  24, time.time())
+    portal.store.add_burnin_sample("run-1", "SER-1", 1000.0, 1, 2, 3, 4,
+                                   5, 0, 60)
+    r = client.delete("/api/devices/SER-1/burnin",
+                      headers={"X-Token": "segredo"})
+    assert r.status_code == 200, r.text
+    assert "1 run(s)" in r.json()["message"]
+    assert portal.store.list_burnin_runs("SER-1") == []
+    assert portal.store.list_burnin_samples("run-1") == []
+
+
+def test_rest_burnin_delete_sem_registro_404():
+    portal = make_portal()
+    client = TestClient(portal.app)
+    r = client.delete("/api/devices/SER-X/burnin",
+                      headers={"X-Token": "segredo"})
+    assert r.status_code == 404
+
+
+def test_start_burnin_run_encerra_run_anterior():
+    """Self-heal: run ativa anterior da MESMA caixa (resultado perdido)
+    não pode acumular — o novo run a encerra como aborted."""
+    portal = make_portal()
+    portal.store.start_burnin_run("run-1", "SER-1", "dev-a", 1000,
+                                  24, time.time())
+    portal.store.start_burnin_run("run-2", "SER-1", "dev-a", 2000,
+                                  12, time.time() + 10)
+    runs = {r["run_id"]: r for r in portal.store.list_burnin_runs("SER-1")}
+    assert runs["run-1"]["verdict"] == "aborted"
+    assert runs["run-1"]["ended_ts"] is not None
+    assert runs["run-2"]["verdict"] is None
+    assert portal.store.active_burnin("SER-1")["run_id"] == "run-2"
+
+
 def test_agent_burnin_stop_vira_broadcast():
     """burnin_stop chega no agente sem chave confiável — o agente manda
     para TODOS os workers (o controller ativo reage, os demais descartam)."""

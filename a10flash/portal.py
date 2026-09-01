@@ -213,8 +213,58 @@ class PortalServer:
             key = rec.get("device_key") or rec.get("port")
             ok, message = await self._route_command(key, "burnin_stop")
             if not ok:
-                raise HTTPException(status_code=409, detail=message)
+                # o run pode estar preso no portal (burnin_result perdido)
+                # — o escape é o force_stop no detalhe do equipamento
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"{message} — run preso no portal? Use "
+                           "'Encerrar burn-in travado' no detalhe do "
+                           "equipamento")
             return JSONResponse({"ok": True, "message": message})
+
+        @app.post("/api/devices/{serial}/burnin/force_stop")
+        async def api_burnin_force_stop(serial: str, request: Request):
+            """Escape hatch: encerra no portal os burn-ins ativos da caixa
+            quando o burnin_result se perdeu (ex.: portal reiniciou no fim
+            do run) e o stop não resolve mais. NÃO fala com o agente —
+            o run real que ainda esteja rodando no lab termina sozinho e
+            o burnin_result dele atualiza o registro."""
+            self._authorize(request)
+            rec = self.store.get(serial)
+            if rec is None:
+                raise HTTPException(status_code=404,
+                                    detail="equipamento não registrado")
+            key = rec.get("device_key") or rec.get("port")
+            ended = time.time()
+            runs = self.store.finish_active_burnins(
+                serial, "aborted", "encerrado manualmente no portal", ended)
+            for r in runs:
+                # sintético, para o dashboard esconder o botão de parar
+                self.bus.publish({
+                    "type": "burnin_result", "device": key,
+                    "run_id": r["run_id"], "ended_ts": ended,
+                    "verdict": "aborted",
+                    "reason": "encerrado manualmente no portal",
+                    "summary": "encerrado manualmente no portal"})
+            return JSONResponse({
+                "ok": True,
+                "message": (f"{len(runs)} run(s) encerrado(s) no portal"
+                            if runs else "nenhum burn-in ativo no portal")})
+
+        @app.delete("/api/devices/{serial}/burnin")
+        async def api_burnin_delete(serial: str, request: Request):
+            """Apaga todo o histórico de burn-ins da caixa (runs +
+            amostras) — limpeza de registros antigos/indesejados."""
+            self._authorize(request)
+            rec = self.store.get(serial)
+            if rec is None:
+                raise HTTPException(status_code=404,
+                                    detail="equipamento não registrado")
+            key = rec.get("device_key") or rec.get("port")
+            n = self.store.delete_burnin_history(serial)
+            self.bus.publish({"type": "burnin_deleted", "device": key})
+            return JSONResponse({"ok": True,
+                                 "message": f"histórico apagado ({n} run(s))"})
 
         @app.post("/api/agents/{agent_id}/cmd")
         async def api_agent_cmd(agent_id: str, request: Request):

@@ -60,6 +60,13 @@ acompanhamento e registro dos equipamentos.
    (parada/erro de config/infra). Fim do burn-in: factory reset (erase)
    e volta ao modo teste. Manual: `POST /api/devices/{serial}/burnin/
    start` (só com caixa em test_mode) e `/stop`; comando via mailbox.
+   Run órfão (burnin_result perdido — portal/agente caiu no fim do run)
+   fica `ended_ts IS NULL` para sempre e trava start/stop (botão de
+   parar eterno): escape hatch `POST /api/devices/{serial}/burnin/
+   force_stop` (encerra runs ativos SÓ no portal, publica burnin_result
+   sintético) e `DELETE /api/devices/{serial}/burnin` (apaga histórico
+   runs+amostras); `start_burnin_run` encerra run ativo anterior da
+   mesma caixa (self-heal).
    REGRA DE PORTAS: modelo (`show version`) define quantas portas
    traseiras de 40G/100G descontar (`trex.trailing_highspeed_ports`,
    default 4 para os modelos "4430+" e 0 para os demais — o brief NÃO

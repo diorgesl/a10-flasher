@@ -197,6 +197,8 @@
     padding: 10px; max-height: 240px; overflow: auto;
   }
   .dev-detail .detail-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .burnin-admin { display: flex; gap: 6px; flex-wrap: wrap; margin: 12px 0 4px; }
+  .burnin-admin button { padding: 5px 10px; font-size: 11px; }
 
   /* ------------------------------------------------ log */
   .log {
@@ -527,6 +529,30 @@
     }
   }
 
+  // Escape hatch do portal: encerra/limpa runs de burn-in presos no DB
+  // (o burnin_result se perdeu — ex.: portal reiniciou no fim do run).
+  async function burninAdmin(serial, action) {
+    const isDel = action === "delete";
+    const label = isDel ? "Apagar TODO o histórico de burn-ins"
+                        : "Encerrar burn-in travado";
+    const detail = isDel
+      ? "Isso apaga todas as runs e amostras de " + serial + " — sem volta."
+      : "Marca os runs ativos de " + serial +
+        " como encerrados no portal. Só use se o lab NÃO está mais " +
+        "rodando o burn-in (ex.: resultado perdido) — não para nada no " +
+        "equipamento.";
+    if (!confirm(label + "?\n\n" + detail)) return;
+    try {
+      const r = await api(`/api/devices/${encodeURIComponent(serial)}/burnin`
+        + (isDel ? "" : "/force_stop"),
+        { method: isDel ? "DELETE" : "POST" });
+      log({ type: "log", level: "info", device: serial, message: r.message });
+      if (openDetail === serial) showDetail(serial);   // recarrega histórico
+    } catch (e) {
+      log({ type: "log", level: "error", device: serial, message: e.message });
+    }
+  }
+
   async function burninCmd(key, action) {
     const dev = devices.find(d => (d.device_key || d.port) === key);
     if (!dev) {
@@ -669,6 +695,11 @@
             <td>${r.cps}</td><td class="${vcls}">${vlabel}</td>
             <td>${esc(r.reason || "—")}</td></tr>`;
           }).join("") + `</table>`;
+        const hasActive = d.runs.some(r => !r.verdict);
+        const adminHtml = `<div class="burnin-admin">
+          ${hasActive ? `<button class="danger btn-force-stop">Encerrar burn-in travado</button>` : ""}
+          <button class="danger btn-del-burnin">Limpar histórico</button>
+        </div>`;
         const samples = ((d.samples || {})[d.runs[0].run_id] || []);
         const fmtBps = v => (v || 0) >= 1e9 ? (v / 1e9).toFixed(2) + " Gbps" : (v / 1e6).toFixed(1) + " Mbps";
         const samplesHtml = samples.length
@@ -678,7 +709,11 @@
               <td>${fmtBps(r.rx_bps)}</td><td>${esc(r.errors || 0)}</td>
               <td>${((r.uptime_s || 0) / 3600).toFixed(1)}h</td></tr>`).join("") + `</table>`
           : `<h4>Amostras do run mais recente</h4><div class="empty">sem amostras</div>`;
-        hist.innerHTML = runsHtml + samplesHtml;
+        hist.innerHTML = runsHtml + adminHtml + samplesHtml;
+        const fs = hist.querySelector(".btn-force-stop");
+        if (fs) fs.onclick = () => burninAdmin(serial, "force_stop");
+        hist.querySelector(".btn-del-burnin").onclick =
+          () => burninAdmin(serial, "delete");
       }).catch(e => { hist.innerHTML = '<h4>Burn-ins</h4><div class="empty">' + e.message + '</div>'; });
       api("/api/devices/" + encodeURIComponent(serial) + "/uptime").then(u => {
         const rows = (u.samples || []);
@@ -740,6 +775,9 @@
         loadDevices();   // novo registro no DB -> atualiza a tabela
       } else if (msg.type === "device_deleted") {
         loadDevices();   // registro apagado -> atualiza a tabela
+      } else if (msg.type === "burnin_deleted") {
+        delete burnin[msg.device];   // histórico apagado no portal
+        render();
       } else if (msg.type === "cmd_ack") {
         // resposta REAL do agente a um comando — falha não pode ser
         // silenciosa (ex.: burnin_stop recusado pelo lab)
