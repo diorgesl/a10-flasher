@@ -262,8 +262,11 @@ class TRexClient:
         # tunables é DICT na lib ASTF (`ASTFProfile.load(path, **tunables)`):
         # lista aqui vira TypeError "argument after ** must be a mapping".
         # A lib converte {"cps": N} em ["--cps", "N"] antes do argparse.
-        profile = client.load_profile(profile_path, tunables={"cps": cps})
-        client.start(profile, duration=duration)
+        client.load_profile(profile_path, tunables={"cps": cps})
+        # o profile já foi carregado (pid DEFAULT) — o `start` NÃO recebe
+        # profile: o 1º posicional é `mult` (multiplicador) e passar o
+        # objeto ali serializa como null → daemon: "field 'mult' value is null"
+        client.start(duration=duration)
         self._last = None  # primeira amostra de taxa é zero
 
     def _raw_stats(self):

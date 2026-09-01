@@ -94,6 +94,12 @@ acompanhamento e registro dos equipamentos.
    "1000"]`) quebra com "argument after ** must be a mapping, not
    list". Passe `{"cps": N}`; a própria lib converte para
    `["--cps", "N"]` antes do argparse do profile (a10_astf.py).
+   **`start` NÃO recebe o profile**: `ASTFClient.start(mult=1,
+   duration=-1, ...)` — o 1º posicional é o MULTIPLICADOR, e o
+   profile já foi carregado via `load_profile` (pid DEFAULT). Passar
+   o objeto do profile como 1º arg serializa `mult` como null → o
+   daemon rejeita com "field 'mult' value is null" (burn-in aborta).
+   Chame `client.start(duration=duration)` sem argumentos extras.
    CAIXA RECÉM-RESETADA: interfaces vêm DESATIVADAS e o brief não
    mostra portas utilizáveis — o setup ATIVA as portas declaradas no
    template (`_template_ports`, fallback 1..14; `configure terminal` +

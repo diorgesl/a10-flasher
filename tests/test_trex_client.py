@@ -34,8 +34,8 @@ class FakeAstfClient:
         self.calls.append(("load_profile", profile, tunables))
         return {"profile": profile, "tunables": tunables}
 
-    def start(self, profile, duration=None):
-        self.calls.append(("start", duration))
+    def start(self, mult=1, duration=None):
+        self.calls.append(("start", mult, duration))
 
     def stop(self):
         self.calls.append("stop")
@@ -141,7 +141,9 @@ def test_start_traffic_loads_profile_with_cps():
     # converte para ['--cps', '1000'] antes do argparse do profile)
     assert fake.calls[2] == ("load_profile", "trex/astf/a10_astf.py",
                              {"cps": 1000})
-    assert fake.calls[3] == ("start", 87000)
+    # start não recebe o profile: 1º posicional é `mult` (multiplicador);
+    # passar o objeto ali serializa como null → "field 'mult' value is null"
+    assert fake.calls[3] == ("start", 1, 87000)
 
 
 def test_stats_first_call_returns_zeros(monkeypatch):
