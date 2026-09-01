@@ -145,6 +145,28 @@ class BurninController:
                 raise BurninStop(cmd.get("reason")
                                  or "parado pelo operador")
 
+    def _relogin(self):
+        """Sessão serial caiu: reloga. Caixas como o TH3030S reiniciam
+        o getty logo após o boot e derrubam a sessão confirmada — o
+        setup do burn-in não pode morrer nisso (bancada: comandos da
+        config caindo no prompt 'Password:' de uma sessão recém-morta)."""
+        try:
+            self.cli.open_and_login()
+            return True
+        except Exception:
+            self.clock.sleep(3)
+            return False
+
+    def _cmd(self, command, timeout=30):
+        """cmd com UMA tentativa de relogin (mesmo padrão do
+        _collect_uptime do worker)."""
+        for attempt in (1, 2):
+            try:
+                return self.cli.cmd(command, timeout=timeout)
+            except Exception:
+                if attempt == 2 or not self._relogin():
+                    raise
+
     def _uptime(self):
         """`show version` -> uptime_s (None se não conseguiu). Reloga se
         a sessão caiu — a caixa reiniciando derruba o console."""
@@ -210,7 +232,7 @@ class BurninController:
         try:
             # 1) portas + template + config LSN
             model = self.device_info.get("model") or ""
-            brief = self.cli.cmd("show interfaces brief", timeout=60)
+            brief = self._cmd("show interfaces brief", timeout=60)
             try:
                 inside, outside = pick_lsn_ports(
                     model, brief, t.get("trailing_highspeed_ports"))
@@ -220,12 +242,26 @@ class BurninController:
                 self._read_file(t.get("lsn_config",
                                       "trex/config_lsn.conf")),
                 inside, outside, t.get("extra_enable_ports", []))
-            rejected = self.cli.apply_config_lines(lines)
+            for attempt in (1, 2):
+                # queda no meio da config: reloga e reaplica INTEIRA
+                # (idempotente — sem write memory a caixa segue de fábrica)
+                try:
+                    rejected = self.cli.apply_config_lines(lines)
+                    break
+                except Exception:
+                    if attempt == 2 or not self._relogin():
+                        raise
             if rejected:
                 config_errors = list(rejected)
                 raise BurninConfigError(
                     f"{len(rejected)} linha(s) de config rejeitadas")
-            self.cli.write_memory()
+            for attempt in (1, 2):
+                try:
+                    self.cli.write_memory()
+                    break
+                except Exception:
+                    if attempt == 2 or not self._relogin():
+                        raise
 
             # 2) tráfego
             self.trex.start_daemon()

@@ -433,3 +433,83 @@ def test_burnin_start_daemon_falha_aborta(monkeypatch):
     assert res["verdict"] == "aborted"
     assert "TRex" in res["reason"]
     assert erased == ["erase"]
+
+
+class FlakyCli(StubCli):
+    """Sessão que cai na primeira chamada (getty reiniciado pós-boot —
+    visto no TH3030S) e volta após open_and_login."""
+
+    def __init__(self):
+        super().__init__()
+        self.dead = True
+
+    def cmd(self, command, timeout=30):
+        if self.dead:
+            raise Exception("console caiu")
+        return super().cmd(command, timeout=timeout)
+
+    def open_and_login(self, login_timeout=20, baud_autodetect=True):
+        self.login_calls += 1
+        self.dead = False
+        self.cmds.append("open_and_login")
+
+
+class FlakyApplyCli(StubCli):
+    """Sessão que cai no MEIO da aplicação da config (1ª chamada do
+    apply_config_lines levanta) e volta após open_and_login."""
+
+    def __init__(self):
+        super().__init__()
+        self.apply_calls = 0
+        self.apply_dead = True
+
+    def apply_config_lines(self, lines, timeout=30):
+        self.apply_calls += 1
+        if self.apply_dead:
+            self.apply_dead = False
+            raise Exception("sessão caiu no meio da config")
+        self.cmds.append(("apply_config_lines", lines))
+        return [ln for ln in lines if ln in self.reject]
+
+
+def test_burnin_setup_reloga_quando_sessao_cai(monkeypatch):
+    """A sessão pode cair entre a confirmação do reboot e o setup do
+    burn-in (bancada: comandos caindo no prompt 'Password:' de uma
+    sessão que acabou de morrer) — o setup reloga e segue."""
+    monkeypatch.setattr(os.path, "exists", lambda p: True)
+    clock = FakeClock()
+    cli = FlakyCli()
+    bus = FakeBus()
+    erased = []
+    ctrl = make_ctrl(clock=clock, cli=cli, bus=bus,
+                     do_erase=lambda: erased.append("erase") or cli)
+    res = ctrl.run()
+    assert res["verdict"] == "pass"
+    assert cli.login_calls >= 1
+    assert "write memory" in cli.written
+    assert erased == ["erase"]
+
+
+def test_burnin_apply_config_retenta_inteiro_apos_queda(monkeypatch):
+    """Queda no meio do apply_config_lines: reloga e reaplica a config
+    INTEIRA (idempotente — sem write memory a caixa segue de fábrica)."""
+    monkeypatch.setattr(os.path, "exists", lambda p: True)
+    clock = FakeClock()
+    cli = FlakyApplyCli()
+    bus = FakeBus()
+    ctrl = make_ctrl(clock=clock, cli=cli, bus=bus)
+    res = ctrl.run()
+    assert res["verdict"] == "pass"
+    assert cli.apply_calls == 2          # 1ª caiu, 2ª aplicou
+    assert "write memory" in cli.written
+
+
+def test_config_line_failed_permission_denied():
+    """Config disparada no nível de usuário ('ACOS>') responde
+    'Permission denied' — não pode ser aceita em silêncio."""
+    from a10flash.a10_cli import SerialA10
+
+    assert SerialA10.config_line_failed(
+        "configure terminal", "% Permission denied") is True
+    assert SerialA10.config_line_failed(
+        "configure terminal", "ok") is False

@@ -1381,7 +1381,8 @@ def test_reset_com_reboot_atrasado_aguarda_reboot_real():
                    reboot_delay=0.5, reboot_pending_delay=10)
     try:
         # boot_wait folgado: o reboot atrasado + relogin consomem tempo
-        cfg = make_cfg(upgrade={"boot_wait": 120})
+        # (180s: margem para a suíte inteira rodando sob carga)
+        cfg = make_cfg(upgrade={"boot_wait": 180})
         result, events = run_worker(cfg, fake)
         assert result["status"] == "success", result
         assert result["version"] == "4.1.4"
@@ -1620,8 +1621,18 @@ def test_ciclo_com_burnin_reboot_fail():
         # (volta ao login) e o `show version` do controller esperaria
         # 30s de timeout nessa tela — uptime pós-reboot ~30s, ACIMA
         # do último sample: o fail nunca dispararia num burn-in curto.
+        # (Determinístico: espera o controller PUBLICAR uma amostra com
+        # o uptime alto antes de derrubar — um sleep fixo de 1.5s pode
+        # passar sem nenhuma amostra sob carga e o veredito vira pass.)
         fake.uptime_s = 100000
-        time.sleep(1.5)
+        sid, q = bus.subscribe()
+        try:
+            while True:
+                ev = q.get(timeout=30)
+                if ev.get("type") == "burnin_sample":
+                    break
+        finally:
+            bus.unsubscribe(sid)
         fake._booted_at = time.time()
         fake.uptime_s = 0
 
@@ -1839,17 +1850,47 @@ def test_ciclo_reboot_confirmado_por_loading_sem_uptime():
     observado pós-reset: o reboot é confirmado pelo LOADING (fallback) —
     um formato desconhecido não pode segurar o ciclo por 600s.
 
-    loading_seconds=10: a janela precisa cobrir o relogin pós-reboot
+    loading_seconds=25: a janela precisa cobrir o relogin pós-reboot
     (o fallback só arma se o LOADING for OBSERVADO — na bancada o
-    LOADING do 3030S durou ~32s)."""
+    LOADING do 3030S durou ~32s; 25s dá margem para a suíte sob carga)."""
     fake = FakeA10(version="4.1.4", booted="primary", mgmt_ip="10.0.0.10",
                    reboot_delay=0.5, uptime_format="none",
-                   loading_seconds=10)
+                   loading_seconds=25)
     axapi = FakeAxapiServer(sw_version="4.1.4")
     try:
-        result, _ = run_worker(make_cfg(upgrade={"boot_wait": 30}), fake,
+        # boot_wait folgado: o LOADING de 25s + relogin consomem tempo
+        result, _ = run_worker(make_cfg(upgrade={"boot_wait": 90}), fake,
                                axapi)
         assert result["status"] == "success", result
     finally:
         axapi.stop()
+        fake.close()
+
+
+def test_uptime_baixo_com_erase_atrasado_espera_reboot_real():
+    """Caixa RECÉM-LIGADA (uptime baixo antes do reset) + erase atrasado:
+    a sessão antiga tem uptime <= tempo-desde-o-reset e o ciclo NÃO pode
+    confundir isso com reboot real (regressão da bancada: o burn-in
+    aplicava a config na sessão antiga e o reboot atrasado estourava no
+    meio — 'config sem login').
+
+    Discriminadores: com o fix, o console cai durante a espera e o
+    relogin é FRESCO → 'back_online' aparece 2x (sessão antiga + sessão
+    nova) e o reboot pendente do fake é consumido. Com o falso positivo,
+    o ciclo segue direto pro modo teste com 1 back_online e o reboot
+    pendente nunca dispara.
+    """
+    fake = FakeA10(version="4.1.4", booted="primary", mgmt_ip="10.0.0.10",
+                   reboot_delay=0.5, reboot_pending_delay=10,
+                   uptime_s=5)   # ligada segundos antes do reset: o uptime
+                                 # da sessão antiga fica <= tempo-do-reset
+                                 # (up - elapsed = 5 - ~10 < 0) -> falso
+                                 # positivo no teste antigo
+    try:
+        cfg = make_cfg(upgrade={"boot_wait": 120})
+        result, events = run_worker(cfg, fake)
+        assert result["status"] == "success", result
+        assert events.count("back_online") >= 2, events
+        assert fake._reboot_at is None, "o reboot pendente não aconteceu"
+    finally:
         fake.close()

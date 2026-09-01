@@ -546,7 +546,7 @@ class SerialA10:
 
     _CONFIG_ERROR_MARKERS = (
         "% invalid input", "invalid input detected", "syntax error",
-        "command rejected", "unrecognized command",
+        "command rejected", "unrecognized command", "permission denied",
     )
 
     @classmethod
