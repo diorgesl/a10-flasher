@@ -100,6 +100,18 @@ acompanhamento e registro dos equipamentos.
    o objeto do profile como 1º arg serializa `mult` como null → o
    daemon rejeita com "field 'mult' value is null" (burn-in aborta).
    Chame `client.start(duration=duration)` sem argumentos extras.
+   **`get_stats` do ASTF NÃO tem 'global'/'ports' (shape STL)**: os
+   contadores vêm por seção lógica `stats['traffic']['client']`/
+   `['server']` (client = inside, server = outside) com nomes estilo
+   netstat FreeBSD (`tcps_sndbyte/rcvbyte/sndpack/rcvpack`,
+   `udps_sndbyte/rcvbyte`, erros `tcps_drops`/`tcps_rcvoopack`/
+   `err_cwf`/`err_no_syn`, flows `m_active_flows`) — ler o shape STL
+   dá KeyError e o burn-in cai no loop "stats do TRex sem porta 0 —
+   reconectando...". O `skip_zero` (default) OMITE os zerados:
+   leitura SEMPRE com `.get(nome, 0)`. `m_active_flows` é contador
+   geral (mesmo valor nas duas seções) — `max`, não soma. UDP: o
+   exemplo oficial usa `udps_sndbyte`, a doc asciidoc lista
+   `udps_sendbyte` — aceitar as duas grafias.
    CAIXA RECÉM-RESETADA: interfaces vêm DESATIVADAS e o brief não
    mostra portas utilizáveis — o setup ATIVA as portas declaradas no
    template (`_template_ports`, fallback 1..14; `configure terminal` +

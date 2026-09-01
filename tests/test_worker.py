@@ -1897,3 +1897,30 @@ def test_uptime_baixo_com_erase_atrasado_espera_reboot_real():
         assert fake._reboot_at is None, "o reboot pendente não aconteceu"
     finally:
         fake.close()
+
+
+def test_status_publica_identidade_e_ip_do_card():
+    """O card do dashboard (Dispositivos em ciclo) precisa de modelo,
+    serial e IP de gerência detectados naquela porta — sem eles não dá
+    para saber quem é quem na bancada."""
+    class Bus:
+        def __init__(self):
+            self.events = []
+
+        def publish(self, ev):
+            self.events.append(ev)
+
+    bus = Bus()
+    notifier = Notifier(log_file=None)
+    power = PowerController({}, notifier)
+    worker = FlashWorker({}, "ttyUSB1", "/dev/ttyUSB1", notifier, power,
+                         bus=bus)
+    worker._serial = "A10-SERIAL-1"
+    worker._model = "Thunder 4430(S)"
+    worker._mgmt_ip = "192.168.1.50"
+    worker._publish_status()
+    st = bus.events[-1]
+    assert st["serial"] == "A10-SERIAL-1"
+    assert st["model"] == "Thunder 4430(S)"
+    assert st["mgmt_ip"] == "192.168.1.50"
+    assert st["state"] == "running"

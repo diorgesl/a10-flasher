@@ -276,18 +276,28 @@ class TRexClient:
         except Exception as exc:
             raise TRexError(f"falha ao ler stats do TRex: {exc}")
         out = {}
-        for i, name in ((0, "port0"), (1, "port1")):
-            try:
-                p = stats["traffic"]["global"]["ports"][i]
-            except (KeyError, IndexError, TypeError):
-                raise TRexError(f"stats do TRex sem porta {i}")
-            out[name] = {
-                "obytes": p.get("obytes", 0),
-                "ibytes": p.get("ibytes", 0),
-                "opackets": p.get("opackets", 0),
-                "ipackets": p.get("ipackets", 0),
-                "errors": p.get("rx_drop", 0) + p.get("tx_drop", 0),
-                "active": p.get("m_active_flows", 0),
+        # No modo ASTF o get_stats não traz stats por porta física: os
+        # contadores vêm por seção lógica ('client' = inside, 'server' =
+        # outside) com nomes estilo netstat FreeBSD (tcps_*/udps_*), e o
+        # skip_zero (default) omite os zerados — leitura sempre com
+        # default. UDP: o exemplo oficial usa udps_sndbyte, a doc asciidoc
+        # lista udps_sendbyte — aceita as duas grafias.
+        for i, name in ((0, "client"), (1, "server")):
+            sec = stats.get("traffic", {}).get(name, {})
+            out[f"port{i}"] = {
+                "obytes": (sec.get("tcps_sndbyte", 0)
+                           + sec.get("udps_sndbyte",
+                                     sec.get("udps_sendbyte", 0))),
+                "ibytes": (sec.get("tcps_rcvbyte", 0)
+                           + sec.get("udps_rcvbyte",
+                                     sec.get("udps_recvbyte", 0))),
+                "opackets": sec.get("tcps_sndpack", 0),
+                "ipackets": sec.get("tcps_rcvpack", 0),
+                "errors": (sec.get("tcps_drops", 0)
+                           + sec.get("tcps_rcvoopack", 0)
+                           + sec.get("err_cwf", 0)
+                           + sec.get("err_no_syn", 0)),
+                "active": sec.get("m_active_flows", 0),
             }
         return out
 
@@ -317,8 +327,10 @@ class TRexClient:
             "rx_bps": rx * 8 / dt,
             "tx_pps": tx_p / dt,
             "rx_pps": rx_p / dt,
-            "active_sessions": (raw["port0"]["active"]
-                                + raw["port1"]["active"]),
+            # 'm_active_flows' é contador geral do ASTF (mesmo valor nas
+            # duas seções) — max evita dobrar a contagem.
+            "active_sessions": max(raw["port0"]["active"],
+                                   raw["port1"]["active"]),
             "errors": raw["port0"]["errors"] + raw["port1"]["errors"],
         }
 

@@ -46,13 +46,21 @@ class FakeAstfClient:
 
 
 def _frame(tx_bytes, rx_bytes, tx_pkts, rx_pkts, errs=0, active=0):
-    return {"traffic": {"global": {"ports": [
-        {"obytes": tx_bytes, "ibytes": 0, "opackets": tx_pkts,
-         "ipackets": 0, "rx_drop": 0, "tx_drop": 0, "m_active_flows": active},
-        {"obytes": 0, "ibytes": rx_bytes, "opackets": 0,
-         "ipackets": rx_pkts, "rx_drop": errs, "tx_drop": 0,
-         "m_active_flows": 0},
-    ]}}}
+    # Shape do get_stats ASTF: contadores por seção lógica (client =
+    # inside, server = outside) com nomes estilo netstat FreeBSD
+    # (tcps_*/udps_*). O skip_zero (default) OMITE os zerados — o leitor
+    # sempre usa default. 'm_active_flows' é contador geral (mesmo valor
+    # nas duas seções).
+    client = {"tcps_sndbyte": tx_bytes, "tcps_sndpack": tx_pkts,
+              "tcps_drops": errs}
+    server = {"tcps_rcvbyte": rx_bytes, "tcps_rcvpack": rx_pkts}
+    if active:
+        client["m_active_flows"] = active
+        server["m_active_flows"] = active
+    return {"traffic": {
+        "client": {k: v for k, v in client.items() if v},
+        "server": {k: v for k, v in server.items() if v},
+    }}
 
 
 class FakePopen:
@@ -218,12 +226,50 @@ def test_stats_errors_cumulative(monkeypatch):
     assert st["errors"] == 7       # segue cumulativo
 
 
-def test_stats_raises_trex_error():
+def test_stats_shape_estranho_vira_zeros():
+    # Shape desconhecido (sem as seções esperadas) NÃO é erro: a leitura
+    # é tolerante e devolve zeros — o burn-in continua. Falha de RPC no
+    # get_stats é que vira TRexError (teste abaixo).
     fake = FakeAstfClient()
     fake.frames = [{"bad": "shape"}]
     c = TRexClient("/opt/trex/v3.08", astf_factory=lambda: fake)
-    with pytest.raises(TRexError):
-        c.stats()
+    assert c.stats() == {"tx_bps": 0, "rx_bps": 0, "tx_pps": 0,
+                         "rx_pps": 0, "active_sessions": 0, "errors": 0}
+
+
+def test_stats_falha_rpc_vira_trex_error():
+    fake = FakeAstfClient()
+
+    def boom(self):
+        raise RuntimeError("daemon sumiu")
+
+    fake.get_stats = boom
+    c = TRexClient("/opt/trex/v3.08", astf_factory=lambda: fake)
+    with pytest.raises(TRexError) as ei:
+        c._raw_stats()
+    assert "falha ao ler stats do TRex" in str(ei.value)
+
+
+def test_stats_aceita_grafia_udps_sendbyte_da_doc(monkeypatch):
+    # A doc asciidoc do TRex lista udps_sendbyte (o exemplo oficial usa
+    # udps_sndbyte) — o parser aceita as duas grafias.
+    fake = FakeAstfClient()
+    fake.frames = [
+        {"traffic": {"client": {"udps_sendbyte": 0}, "server": {}}},
+        {"traffic": {"client": {"udps_sendbyte": 8000}, "server": {}}},
+    ]
+    c = TRexClient("/opt/trex/v3.08", astf_factory=lambda: fake)
+    now = [1000.0]
+
+    class Clock:
+        @staticmethod
+        def monotonic():
+            return now[0]
+
+    monkeypatch.setattr(tc.time, "monotonic", Clock.monotonic)
+    c.stats()
+    now[0] += 10.0
+    assert c.stats()["tx_bps"] == 8000 * 8 / 10
 
 
 def test_stop_all_stops_ours_only():

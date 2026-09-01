@@ -476,6 +476,9 @@
         ${rail.html}
         ${rail.stageLine}
         <div class="rows">
+          <div class="row"><span>modelo</span><b>${esc(st.model || "—")}</b></div>
+          <div class="row"><span>serial</span><b>${esc(st.serial || "—")}</b></div>
+          <div class="row"><span>IP de gerência</span><b>${esc(st.mgmt_ip || "—")}</b></div>
           <div class="row"><span>versão ACOS</span><b>${esc(st.version || "—")}</b></div>
           <div class="row"><span>tentativas</span><b>${esc(st.attempts || 0)}</b></div>
           <div class="row"><span>última atualização</span><b>${stamp(st.updated_at || st.ts)}</b></div>

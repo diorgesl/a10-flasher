@@ -67,6 +67,9 @@ class FlashWorker:
         self._deferred_cmds = []   # comandos deferidos nas fronteiras de estágio
         self._attempts = 0
         self._version = None
+        self._serial = None
+        self._model = None
+        self._mgmt_ip = None
         self._state = "running"
         self._stage = None
         self._processed = None
@@ -250,6 +253,9 @@ class FlashWorker:
             "state": self._state,
             "stage": self._stage,
             "version": self._version,
+            "serial": self._serial,
+            "model": self._model,
+            "mgmt_ip": self._mgmt_ip,
             "attempts": self._attempts,
             "message": (result or {}).get("summary")
             or (result or {}).get("error"),
@@ -352,6 +358,10 @@ class FlashWorker:
                 self.device,
                 "Coletando retrato do equipamento (serial + shows)...")
             device_info = self._collect_device_info(cli)
+            # identidade no card do dashboard (modelo/serial daquela
+            # porta) — coletada junto com o retrato, antes das ações
+            self._serial = (device_info.get("serial") or "").strip() or None
+            self._model = device_info.get("model") or None
 
             # anti-loop: caixa já processada -> pula as AÇÕES
             # DESTRUTIVAS, mas entra no modo teste mesmo assim — a caixa
@@ -402,6 +412,7 @@ class FlashWorker:
                 # o legado 172.31.31.31 por DHCP); o AXAPI ainda usa o IP
                 # descoberto
                 mgmt_ip = self._ensure_mgmt_ip(cli)
+                self._mgmt_ip = mgmt_ip  # card do dashboard: IP do DHCP
                 if method == "cli":
                     mgmt_ip = None   # cli puxa pela gerência sem saber o IP
                 self._do_upgrade(cli, mgmt_ip, dec)
