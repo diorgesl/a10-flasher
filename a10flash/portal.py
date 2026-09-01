@@ -360,6 +360,20 @@ class PortalServer:
                                       f"{msg.get('serial') or msg.get('device')}: {exc}")
                         self.bus.publish({**msg, "agent": agent_id})
                         continue
+                    elif msg.get("type") == "cmd_ack":
+                        # a resposta REAL do agente a um comando — falha
+                        # silenciosa não pode sumir (ex.: 'worker não está
+                        # rodando' no burnin_stop)
+                        if not msg.get("ok"):
+                            self.notifier.warn(
+                                None,
+                                f"agente {agent_id}: comando "
+                                f"{msg.get('command')} para "
+                                f"{msg.get('device')} falhou: "
+                                f"{msg.get('message')}")
+                        self._track(agent_id, msg)
+                        self.bus.publish({**msg, "agent": agent_id})
+                        continue
                     elif msg.get("type") in AGENT_TYPES:
                         if msg.get("type") == "device_result":
                             rec = self._save_device_record(agent_id, msg)

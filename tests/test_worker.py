@@ -1583,6 +1583,9 @@ def test_ciclo_com_burnin_automatico_pass():
                     if e.get("type") == "burnin_result"]
         assert len(started) == 1 and started[0]["cps"] == 10
         assert finished and finished[0]["verdict"] == "pass"
+        # estado "burnin" publicado durante o run (dashboard/portal veem)
+        assert any(e.get("type") == "status" and e.get("state") == "burnin"
+                   for e in events)
         assert trex.start_traffic_called is True
         assert trex.profile_seen.endswith("trex/astf/a10_astf.py")
     finally:

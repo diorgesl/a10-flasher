@@ -33,6 +33,10 @@ class FakeMonitor:
         self.calls.append(("cmd", key, command, reason, extra))
         return True, "ok (fake)"
 
+    def send_command_all(self, command, reason=None, **extra):
+        self.calls.append(("cmd_all", command, reason, extra))
+        return True, "comando enviado a 1 worker(s)"
+
     def request_run(self, key):
         self.calls.append(("rerun", key))
         return True, "ok (fake)"
@@ -573,3 +577,21 @@ def test_rest_burnin_stop_sem_run_409():
     r = client.post("/api/devices/SER-X/burnin/stop",
                     json={}, headers={"X-Token": "segredo"})
     assert r.status_code == 409
+
+
+def test_agent_burnin_stop_vira_broadcast():
+    """burnin_stop chega no agente sem chave confiável — o agente manda
+    para TODOS os workers (o controller ativo reage, os demais descartam)."""
+    from a10flash.agent import AgentClient
+    from a10flash.bus import EventBus
+
+    mon = FakeMonitor()
+    agent = AgentClient(url="ws://127.0.0.1:1", token="x", bus=EventBus(),
+                        monitor=mon, agent_id="lab-1")
+    agent._handle_cmd({"type": "cmd", "device": "dev-a",
+                       "command": "burnin_stop", "reason": None})
+    assert ("cmd_all", "burnin_stop", None, {}) in mon.calls
+    # comandos comuns continuam roteados por chave
+    agent._handle_cmd({"type": "cmd", "device": "dev-a",
+                       "command": "abort", "reason": "teste"})
+    assert ("cmd", "dev-a", "abort", "teste", {}) in mon.calls

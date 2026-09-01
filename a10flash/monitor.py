@@ -172,6 +172,23 @@ class PortMonitor:
                              **extra})
         return True, "comando enviado"
 
+    def send_command_all(self, command, reason=None, **extra):
+        """Comando para TODOS os workers vivos (ex.: burnin_stop).
+
+        Worker fora de burn-in descarta o comando com segurança (o modo
+        teste ignora burnin_stop; o ciclo defere e descarta) — só o
+        controller com burn-in ativo reage.
+        """
+        sent = 0
+        for rec in self.known.values():
+            if rec["thread"].is_alive():
+                rec["mailbox"].send({"command": command, "reason": reason,
+                                     **extra})
+                sent += 1
+        if not sent:
+            return False, "nenhum worker rodando"
+        return True, f"comando enviado a {sent} worker(s)"
+
     def request_run(self, key, path=None):
         """Força um novo ciclo para a chave (se não estiver rodando).
 

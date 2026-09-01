@@ -1266,6 +1266,10 @@ class FlashWorker:
             device=self.device, port_path=self.port_path,
             mailbox=self.mailbox, do_erase=do_erase,
             cps_override=cps_override, duration_override=duration_override)
+        # estado "burnin" publicado ANTES do loop: o portal/dashboard
+        # mostram o burn-in em andamento (não só 'test_mode')
+        self._state = "burnin"
+        self._publish_status(result={"summary": "burn-in em andamento"})
         try:
             res = ctrl.run()
         except BurninAbort:

@@ -3,115 +3,256 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>a10-flasher — Portal</title>
+<title>a10-flasher — Portal de bancada</title>
 <style>
   :root {
-    --bg: #0f1419; --panel: #1a212b; --border: #2a3441;
-    --text: #dbe4ee; --muted: #8b98a9;
-    --green: #2ecc71; --red: #e74c3c; --blue: #3498db;
-    --orange: #f39c12; --gray: #6c7a89; --purple: #9b59b6;
+    --bg: #0a0d13; --panel: #111722; --panel-2: #0c111a;
+    --border: #1d2734; --border-hover: #2b3a4f;
+    --text: #d8e1ec; --muted: #8291a4;
+    --green: #33c789; --red: #e05b54; --blue: #4c9fe6;
+    --orange: #d99a2b; --purple: #a06bc9; --gray: #5f6f82;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --mono: "SF Mono", ui-monospace, "JetBrains Mono", "Cascadia Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
+  *::-webkit-scrollbar { width: 9px; height: 9px; }
+  *::-webkit-scrollbar-thumb { background: #25324a; border-radius: 6px; border: 2px solid transparent; background-clip: content-box; }
+  *::-webkit-scrollbar-track { background: transparent; }
+  ::selection { background: rgba(76, 159, 230, .3); }
+  :focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
   body {
     background: var(--bg); color: var(--text);
-    font: 14px/1.5 "SF Mono", Consolas, "DejaVu Sans Mono", monospace;
-    padding: 16px; max-width: 1400px; margin: 0 auto;
+    font: 14px/1.5 var(--sans); -webkit-font-smoothing: antialiased;
+    font-variant-numeric: tabular-nums;
+    max-width: 1400px; margin: 0 auto; padding: 0 18px 36px;
   }
-  header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
-  h1 { font-size: 18px; }
-  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--gray); display: inline-block; }
-  .dot.on { background: var(--green); box-shadow: 0 0 8px var(--green); }
-  .dot.off { background: var(--red); }
-  .muted { color: var(--muted); font-size: 12px; }
-  .badge {
-    display: inline-block; padding: 2px 10px; border-radius: 10px;
-    font-size: 12px; font-weight: bold; text-transform: uppercase;
-  }
-  .st-waiting { background: #22303f; color: var(--gray); }
-  .st-running { background: #1c3448; color: var(--blue); }
-  .st-paused { background: #3d3315; color: var(--orange); }
-  .st-success { background: #14351f; color: var(--green); }
-  .st-failed, .st-manual_required { background: #3d1713; color: var(--red); }
-  .st-aborted { background: #2c1d3d; color: var(--purple); }
 
-  .agents { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+  /* ------------------------------------------------ header */
+  header {
+    position: sticky; top: 0; z-index: 10;
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 14px 0; margin-bottom: 4px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg);
+  }
+  @supports (backdrop-filter: blur(10px)) {
+    header { background: rgba(10, 13, 19, .82); backdrop-filter: blur(10px); }
+  }
+  .brand h1 { font-size: 17px; font-weight: 700; letter-spacing: -.01em; }
+  .brand .sub { display: block; font-size: 11px; color: var(--muted); font-weight: 400; margin-top: 1px; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 4px 12px; border-radius: 999px;
+    border: 1px solid var(--border);
+    font: 500 11px/1 var(--mono); color: var(--muted);
+  }
+  .pill.on { color: var(--green); border-color: rgba(51, 199, 137, .4); }
+  .clock { margin-left: auto; font: 12px/1 var(--mono); color: var(--muted); }
+
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--gray); display: inline-block; flex: none; }
+  .dot.on { background: var(--green); box-shadow: 0 0 8px var(--green); animation: pulse 2.4s ease-in-out infinite; }
+  .dot.off { background: var(--gray); }
+  @keyframes pulse { 50% { opacity: .4; } }
+
+  /* ------------------------------------------------ seções */
+  .section {
+    display: flex; align-items: center; gap: 10px;
+    margin: 18px 0 8px; padding-top: 14px; border-top: 1px solid var(--border);
+  }
+  .section .eyebrow {
+    font: 600 10px/1 var(--sans); letter-spacing: .14em;
+    text-transform: uppercase; color: var(--muted);
+  }
+  .section .chip {
+    font: 500 10px/1 var(--mono); color: var(--muted);
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 999px; padding: 3px 9px;
+  }
+  .section .spacer { flex: 1; }
+  .section button { padding: 4px 10px; font-size: 11px; }
+
+  /* ------------------------------------------------ agentes */
+  .agents { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 2px; }
   .agent-chip {
-    background: var(--panel); border: 1px solid var(--border); border-radius: 16px;
-    padding: 4px 12px; font-size: 12px; display: flex; gap: 8px; align-items: center;
+    display: inline-flex; align-items: center; gap: 8px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 999px;
+    padding: 5px 12px; font: 500 12px/1 var(--mono);
   }
-  .agent-chip.offline { opacity: .5; }
+  .agent-chip.offline { opacity: .5; border-style: dashed; }
+  .agent-chip .muted { font-size: 11px; }
 
-  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; margin-bottom: 16px; }
-  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
-  .card h3 { font-size: 14px; margin-bottom: 6px; display: flex; justify-content: space-between; gap: 8px; align-items: center; }
-  .card .agent { color: var(--muted); font-size: 11px; }
-  .card .row { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin: 2px 0; }
-  .card .row b { color: var(--text); font-weight: normal; }
-  .actions { margin-top: 10px; display: flex; gap: 6px; }
+  .muted { color: var(--muted); font-size: 12px; }
+
+  /* ------------------------------------------------ cartões */
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 14px; display: flex; flex-direction: column; gap: 10px;
+    transition: border-color .15s;
+  }
+  .card:hover { border-color: var(--border-hover); }
+  .card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+  .card-title { font: 600 15px/1.3 var(--mono); }
+  .card-title .agent { display: block; font: 400 11px/1.6 var(--sans); color: var(--muted); margin-top: 3px; }
+
+  .badge {
+    display: inline-flex; align-items: center; gap: 7px; flex: none;
+    padding: 3px 10px; border-radius: 999px;
+    font: 600 10px/1.2 var(--mono); letter-spacing: .08em; text-transform: uppercase;
+    border: 1px solid transparent;
+  }
+  .badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; box-shadow: 0 0 6px currentColor; }
+  .st-waiting { color: var(--gray); background: rgba(95, 111, 130, .1); border-color: rgba(95, 111, 130, .3); }
+  .st-running { color: var(--blue); background: rgba(76, 159, 230, .1); border-color: rgba(76, 159, 230, .35); }
+  .st-paused { color: var(--orange); background: rgba(217, 154, 43, .1); border-color: rgba(217, 154, 43, .35); }
+  .st-success { color: var(--green); background: rgba(51, 199, 137, .1); border-color: rgba(51, 199, 137, .35); }
+  .st-failed, .st-manual_required { color: var(--red); background: rgba(224, 91, 84, .1); border-color: rgba(224, 91, 84, .35); }
+  .st-aborted { color: var(--purple); background: rgba(160, 107, 201, .1); border-color: rgba(160, 107, 201, .35); }
+
+  /* trilho do ciclo: login → upgrade → reboot → reset → teste */
+  .rail { display: flex; gap: 4px; margin-top: 2px; }
+  .rail-seg { flex: 1; text-align: center; font: 9px/1.3 var(--mono); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .rail-seg i { display: block; height: 5px; margin-bottom: 4px; border-radius: 3px; background: var(--border); transition: background .3s; }
+  .rail-seg.done i { background: var(--green); }
+  .rail-seg.cur i { background: var(--blue); box-shadow: 0 0 6px var(--blue); }
+  .rail-seg.bad i { background: var(--red); }
+  .rail-seg.cur { color: var(--text); }
+
+  .rows { display: flex; flex-direction: column; gap: 3px; }
+  .row { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; color: var(--muted); }
+  .row b { color: var(--text); font: 500 12px/1.5 var(--mono); text-align: right; word-break: break-word; }
+  .row.etapa b { color: var(--blue); }
+  .row.etapa.bad b { color: var(--red); }
+
+  /* burn-in */
+  .burnin {
+    margin-top: 2px; padding: 10px;
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
+  }
+  .burnin-head { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
+  .burnin-head .burnin-label { font: 600 10px/1 var(--sans); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+  .burnin-head b { font: 500 12px/1 var(--mono); color: var(--text); }
+  .burnin-head .btn-burnin-stop { margin-left: auto; }
+  .progress { height: 6px; border-radius: 3px; background: var(--bg); overflow: hidden; }
+  .progress i { display: block; height: 100%; border-radius: 3px; background: var(--blue); transition: width .6s ease; }
+  .progress.is-pass i { background: var(--green); }
+  .progress.is-fail i { background: var(--red); }
+  .progress.is-abort i { background: var(--purple); }
+
+  .actions {
+    display: flex; gap: 6px; flex-wrap: wrap;
+    margin-top: auto; padding-top: 10px; border-top: 1px dashed var(--border);
+  }
+
   button {
-    background: #26313f; color: var(--text); border: 1px solid var(--border);
-    border-radius: 6px; padding: 5px 10px; font: inherit; font-size: 12px; cursor: pointer;
+    background: #1a2332; color: var(--text);
+    border: 1px solid var(--border); border-radius: 7px;
+    padding: 7px 12px; font: 500 12px/1 var(--sans); cursor: pointer;
+    transition: background .15s, border-color .15s;
   }
-  button:hover { background: #31404f; }
-  button.danger:hover { background: #4a1d18; border-color: var(--red); }
-  button.ok:hover { background: #14351f; border-color: var(--green); }
-  button:disabled { opacity: .4; cursor: not-allowed; }
+  button:hover { background: #223047; border-color: var(--border-hover); }
+  button.ok { color: var(--green); border-color: rgba(51, 199, 137, .35); }
+  button.ok:hover { background: rgba(51, 199, 137, .12); }
+  button.danger { color: var(--red); border-color: rgba(224, 91, 84, .35); }
+  button.danger:hover { background: rgba(224, 91, 84, .12); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
 
-  .empty { color: var(--muted); text-align: center; padding: 30px; border: 1px dashed var(--border); border-radius: 8px; }
+  select, input {
+    background: var(--panel); color: var(--text);
+    border: 1px solid var(--border); border-radius: 7px;
+    padding: 5px 9px; font: 500 11px/1.3 var(--sans);
+  }
 
-  .devices-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 8px; }
-  .devices-table th, .devices-table td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); }
-  .devices-table th { color: var(--muted); font-weight: normal; font-size: 11px; text-transform: uppercase; }
-  .devices-table tr:hover td { background: #1e2834; }
+  .empty {
+    color: var(--muted); text-align: center; padding: 26px 16px;
+    border: 1px dashed var(--border); border-radius: 10px; font-size: 13px;
+  }
+
+  /* ------------------------------------------------ equipamentos */
+  .devices-table { width: 100%; border-collapse: collapse; font: 12px/1.5 var(--mono); }
+  .devices-table th {
+    text-align: left; padding: 6px 12px;
+    font: 600 10px/1.2 var(--sans); letter-spacing: .1em; text-transform: uppercase;
+    color: var(--muted); border-bottom: 1px solid var(--border);
+  }
+  .devices-table td { padding: 8px 12px; border-bottom: 1px solid var(--border); }
+  .devices-table tbody tr { cursor: pointer; }
+  .devices-table tbody tr:hover td { background: #141b27; }
   .devices-table .upd-yes { color: var(--green); }
   .devices-table .upd-no { color: var(--muted); }
-  .dev-row { cursor: pointer; }
-  .dev-detail { background: #0b0f14; border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin: 0 0 16px; }
-  .dev-detail h4 { font-size: 11px; color: var(--muted); margin: 8px 0 4px; text-transform: uppercase; }
-  .dev-detail pre { white-space: pre-wrap; word-break: break-word; font: inherit; font-size: 12px; color: var(--text); }
+  .btn-report { padding: 3px 10px; font-size: 10px; border-radius: 5px; }
 
-  .log {
-    background: #0b0f14; border: 1px solid var(--border); border-radius: 8px;
-    height: 300px; overflow-y: auto; padding: 10px; font-size: 12px;
+  .dev-detail {
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px; margin: 0 0 18px;
   }
-  .log .line { white-space: pre-wrap; word-break: break-word; }
-  .log .t { color: var(--muted); }
-  .log .info { color: var(--blue); }
-  .log .ok { color: var(--green); }
-  .log .warn { color: var(--orange); }
-  .log .error { color: var(--red); }
-  .toolbar { display: flex; gap: 10px; margin-bottom: 8px; align-items: center; }
-  select, input {
-    background: var(--panel); color: var(--text); border: 1px solid var(--border);
-    border-radius: 6px; padding: 4px 8px; font: inherit; font-size: 12px;
+  .dev-detail h4 {
+    font: 600 10px/1 var(--sans); letter-spacing: .1em; text-transform: uppercase;
+    color: var(--muted); margin: 14px 0 6px;
+  }
+  .dev-detail pre {
+    white-space: pre-wrap; word-break: break-word;
+    font: 12px/1.5 var(--mono); color: var(--text);
+    background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px; max-height: 240px; overflow: auto;
+  }
+  .dev-detail .detail-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+
+  /* ------------------------------------------------ log */
+  .log {
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px;
+    height: 300px; overflow-y: auto; padding: 10px 12px;
+    font: 12px/1.6 var(--mono);
+  }
+  .log:empty::before { content: "sem eventos ainda — a bancada vai falando por aqui…"; color: var(--muted); }
+  .log .line { padding: 0 0 0 10px; border-left: 2px solid transparent; white-space: pre-wrap; word-break: break-word; }
+  .log .line .t { color: var(--muted); margin-right: 8px; }
+  .log .info { border-left-color: var(--blue); }
+  .log .ok { border-left-color: var(--green); }
+  .log .warn { border-left-color: var(--orange); }
+  .log .error { border-left-color: var(--red); color: #f0a09a; }
+
+  @media (max-width: 620px) {
+    .cards { grid-template-columns: 1fr; }
+    .log { height: 220px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
   }
 </style>
 </head>
 <body>
 <header>
-  <h1>⚡ a10-flasher</h1>
-  <span class="dot" id="conn"></span>
-  <span class="muted" id="connLabel">desconectado</span>
-  <span class="muted" style="margin-left:auto" id="clock"></span>
+  <div class="brand">
+    <h1>⚡ a10-flasher</h1>
+    <span class="sub">portal de bancada · firmware + factory reset · A10 Thunder</span>
+  </div>
+  <span class="pill off" id="connPill"><span class="dot off" id="conn"></span><span id="connLabel">desconectado</span></span>
+  <span class="clock" id="clock"></span>
 </header>
 
+<div class="section"><span class="eyebrow">Agentes</span></div>
 <div class="agents" id="agents"></div>
+
+<div class="section"><span class="eyebrow">Dispositivos em ciclo</span><span class="chip" id="cycleCount"></span></div>
 <div class="cards" id="cards"></div>
 
-<div class="toolbar" style="margin-top:8px">
-  <span class="muted">📦 Equipamentos registrados:</span>
+<div class="section">
+  <span class="eyebrow">Equipamentos registrados</span>
+  <span class="chip" id="devCount"></span>
+  <span class="spacer"></span>
   <button id="reloadDevices">atualizar</button>
-  <span class="muted" id="devCount"></span>
 </div>
 <div id="devices"></div>
 
-<div class="toolbar">
-  <span class="muted">Eventos:</span>
+<div class="section">
+  <span class="eyebrow">Eventos</span>
   <select id="filter">
     <option value="">todos</option>
   </select>
+  <span class="spacer"></span>
   <button id="clearLog">limpar</button>
-  <span class="muted" id="logCount"></span>
+  <span class="chip" id="logCount"></span>
 </div>
 <div class="log" id="log"></div>
 
@@ -128,6 +269,19 @@
     aborted: ["abortado", "st-aborted"],
     manual_required: ["intervenção manual", "st-manual_required"],
     test_mode: ["modo teste", "st-running"],
+  };
+  // trilho do ciclo (sequência real do worker)
+  const RAIL = [
+    ["login", "login"], ["upgrade", "upgrade"], ["reboot", "reboot"],
+    ["reset", "reset"], ["teste", "teste"],
+  ];
+  const STAGE_LABEL = {
+    login: "login no console", logged_in: "login no console",
+    axapi_auth: "autenticando AXAPI", axapi_upgrade: "upgrade via AXAPI",
+    upgrade_download: "baixando imagem", set_bootimage: "partição de boot",
+    reboot: "reiniciando", back_online: "aguardando voltar",
+    reset_erase: "factory reset (erase)", "reset_system-reset": "factory reset (system-reset)",
+    test_mode: "modo teste", skipped: "já processada",
   };
   const agents = {};   // agent_id -> {online, devices: {key: status}}
   const paused = {};   // key -> bool
@@ -231,23 +385,58 @@
         <span class="dot ${a.online ? "on" : "off"}"></span>
         ${esc(id)} <span class="muted">(${n} disp.)</span>
       </span>`;
-    }).join("") : '<span class="muted">nenhum agente conectado</span>';
+    }).join("") : '<span class="empty">Nenhum agente conectado — o lab ainda não falou com o portal.</span>';
+  }
+
+  // posição do dispositivo no trilho do ciclo
+  function railIndex(stage) {
+    if (!stage) return -1;
+    const s = String(stage).toLowerCase();
+    if (s === "login" || s === "logged_in") return 0;
+    if (["axapi_auth", "axapi_upgrade", "upgrade_download", "set_bootimage"].includes(s) || s.startsWith("upgrade")) return 1;
+    if (s === "reboot" || s.startsWith("back_online")) return 2;
+    if (s.startsWith("reset")) return 3;
+    if (s.startsWith("test") || s === "skipped") return 4;
+    return -1;
+  }
+
+  function railHtml(st) {
+    const idx = railIndex(st.stage);
+    const finished = ["success", "test_mode", "skipped"].includes(st.state);
+    const bad = ["failed", "aborted", "manual_required"].includes(st.state);
+    const nDone = finished ? 5 : bad ? idx + 1 : Math.max(idx, 0);
+    const cur = (finished || bad || idx < 0) ? -1 : idx;
+    const badIdx = bad ? idx : -1;
+    const segs = RAIL.map(([k, label], i) => {
+      const cls = i < nDone ? " done" : i === cur ? " cur" : i === badIdx ? " bad" : "";
+      return `<span class="rail-seg${cls}" title="${label}"><i></i>${label}</span>`;
+    }).join("");
+    let stageLine = "";
+    if (cur >= 0) {
+      stageLine = `<div class="row etapa"><span>etapa atual</span><b>${cur + 1}/${RAIL.length} · ${esc(STAGE_LABEL[st.stage] || st.stage)}</b></div>`;
+    } else if (badIdx >= 0) {
+      stageLine = `<div class="row etapa bad"><span>interrompido em</span><b>${esc(STAGE_LABEL[st.stage] || st.stage)}</b></div>`;
+    }
+    return { html: `<div class="rail">${segs}</div>`, stageLine };
   }
 
   function burninRow(key) {
     const b = burnin[key];
-    const [label, cls] = (() => {
-      if (b.verdict === "pass") return ["burn-in: aprovada ✓", "st-success"];
-      if (b.verdict === "fail") return ["burn-in: REPROVADA ✗", "st-failed"];
-      if (b.verdict === "aborted") return ["burn-in: abortada", "st-aborted"];
-      const elapsed = Math.min((Date.now() / 1000 - b.started_ts)
-        / (b.duration_h * 3600), 1);
-      const pct = Math.round(elapsed * 100);
+    let pct, label, cls, progCls;
+    if (b.verdict === "pass") { pct = 100; label = "aprovada ✓"; cls = "st-success"; progCls = "is-pass"; }
+    else if (b.verdict === "fail") { pct = 100; label = "REPROVADA ✗"; cls = "st-failed"; progCls = "is-fail"; }
+    else if (b.verdict === "aborted") { pct = 100; label = "abortada"; cls = "st-aborted"; progCls = "is-abort"; }
+    else {
+      pct = Math.min((Date.now() / 1000 - b.started_ts) / (b.duration_h * 3600), 1) * 100;
       const done = Math.round((Date.now() / 1000 - b.started_ts) / 3600 * 10) / 10;
-      return [`burn-in: ${pct}% (${done}h/${b.duration_h}h, ${b.cps} CPS)`, "st-running"];
-    })();
+      label = `${Math.round(pct)}% · ${done}h de ${b.duration_h}h · ${b.cps} CPS`;
+      cls = "st-running"; progCls = "";
+    }
     const controls = b.verdict === null ? `<button class="danger btn-burnin-stop" data-key="${esc(key)}">Parar burn-in</button>` : "";
-    return `<div class="row"><span>${label}</span><b>${controls}</b></div>`;
+    return `<div class="burnin">
+      <div class="burnin-head"><span class="burnin-label">burn-in</span><b>${label}</b>${controls}</div>
+      <div class="progress ${progCls}"><i style="width:${pct}%"></i></div>
+    </div>`;
   }
 
   function renderDevices() {
@@ -264,9 +453,10 @@
     filter.innerHTML = '<option value="">todos</option>' +
       flat.map(f => `<option value="${esc(f.agent + "/" + f.key)}">${esc(f.agent + " / " + f.key)}</option>`).join("");
     if (cur) filter.value = cur;
+    $("cycleCount").textContent = flat.length;
 
     if (!flat.length) {
-      $("cards").innerHTML = '<div class="empty">Nenhum dispositivo — aguardando agentes e equipamentos...</div>';
+      $("cards").innerHTML = '<div class="empty">Bancada vazia — conecte um equipamento à serial para iniciar o ciclo.</div>';
       return;
     }
     $("cards").innerHTML = flat.map(f => {
@@ -274,15 +464,21 @@
       const [label, cls] = STATUS[st.state] || ["desconhecido", "st-waiting"];
       const running = st.state === "running" || st.state === "paused";
       const pausedBtn = paused[f.key] ? "Retomar" : "Pausar";
+      const rail = railHtml(st);
       return `<div class="card">
-        <h3><span>${esc(f.key)}<br><span class="agent">${esc(f.agent)}</span></span>
-            <span class="badge ${cls}">${label}</span></h3>
-        <div class="row"><span>porta</span><b>${esc(st.port || "—")}</b></div>
-        <div class="row"><span>estágio</span><b>${esc(st.stage || "—")}</b></div>
-        <div class="row"><span>versão ACOS</span><b>${esc(st.version || "—")}</b></div>
-        <div class="row"><span>tentativas</span><b>${esc(st.attempts || 0)}</b></div>
-        <div class="row"><span>última atualização</span><b>${stamp(st.updated_at || st.ts)}</b></div>
-        ${st.message ? `<div class="row"><span>mensagem</span><b>${esc(st.message)}</b></div>` : ""}
+        <div class="card-head">
+          <span class="card-title">${esc(f.key)}
+            <span class="agent">${esc(f.agent)}${st.port ? " · " + esc(st.port) : ""}</span></span>
+          <span class="badge ${cls}">${label}</span>
+        </div>
+        ${rail.html}
+        ${rail.stageLine}
+        <div class="rows">
+          <div class="row"><span>versão ACOS</span><b>${esc(st.version || "—")}</b></div>
+          <div class="row"><span>tentativas</span><b>${esc(st.attempts || 0)}</b></div>
+          <div class="row"><span>última atualização</span><b>${stamp(st.updated_at || st.ts)}</b></div>
+          ${st.message ? `<div class="row"><span>mensagem</span><b>${esc(st.message)}</b></div>` : ""}
+        </div>
         ${burnin[f.key] ? burninRow(f.key) : ""}
         <div class="actions">
           ${running ? `<button class="toggle-pause" data-key="${esc(f.key)}">${pausedBtn}</button>` : ""}
@@ -379,9 +575,9 @@
       $("devices").innerHTML = '<div class="empty">Nenhum equipamento registrado ainda — os A10 concluídos aparecem aqui.</div>';
       return;
     }
-    $("devices").innerHTML = `<table class="devices-table"><tr>
-        <th>Serial</th><th>Modelo</th><th>Versão</th><th>Atualizado</th>
-        <th>Agente</th><th>Registrado</th><th>Relatório</th></tr>` +
+    $("devices").innerHTML = `<table class="devices-table"><thead><tr>
+        <th>Serial</th><th>Modelo</th><th>Versão</th><th>Upgrade</th>
+        <th>Agente</th><th>Registrado</th><th>Relatório</th></tr></thead><tbody>` +
       devices.map(d => `<tr class="dev-row" data-serial="${esc(d.serial)}">
         <td>${esc(d.serial)}</td>
         <td>${esc(d.model || "—")}</td>
@@ -390,7 +586,7 @@
         <td>${esc(d.agent || "—")}</td>
         <td>${fmtDate(d.updated_at)}</td>
         <td><button class="btn-report" data-serial="${esc(d.serial)}">PDF</button></td>
-      </tr>`).join("") + `</table>`;
+      </tr>`).join("") + `</tbody></table>`;
     document.querySelectorAll(".dev-row").forEach(tr => {
       tr.onclick = () => toggleDetail(tr.dataset.serial);
     });
@@ -449,15 +645,15 @@
         el.className = "dev-detail";
         $("devices").appendChild(el);
       }
-      el.innerHTML = `<div style="margin-bottom:8px">
-          <button class="danger" id="delDevice">apagar registro</button>
+      el.innerHTML = `<div class="detail-top">
           <span class="muted">serial: ${esc(d.serial)}</span>
+          <button class="danger" id="delDevice">apagar registro</button>
         </div>
         <h4>show version</h4><pre>${esc(d.version_output || "—")}</pre>
         <h4>show license-info</h4><pre>${esc(d.license_info || "—")}</pre>
         <h4>show environment</h4><pre>${esc(d.environment || "—")}</pre>
-<h4>show interfaces</h4><pre>${esc(d.interfaces || "—")}</pre>
-<h4>uptime (modo teste)</h4><div id="uptimeHist" class="muted">carregando…</div>`;
+        <h4>show interfaces</h4><pre>${esc(d.interfaces || "—")}</pre>
+        <h4>uptime (modo teste)</h4><div id="uptimeHist" class="muted">carregando…</div>`;
       const hist = document.createElement("div");
       hist.innerHTML = '<h4>Burn-ins</h4><div class="empty">carregando…</div>';
       el.appendChild(hist);
@@ -506,6 +702,8 @@
   function setConn(ok) {
     const dot = $("conn");
     dot.className = "dot " + (ok ? "on" : "off");
+    const pill = $("connPill");
+    pill.className = "pill " + (ok ? "on" : "off");
     $("connLabel").textContent = ok ? "conectado" : "desconectado";
   }
 
@@ -542,8 +740,15 @@
         loadDevices();   // novo registro no DB -> atualiza a tabela
       } else if (msg.type === "device_deleted") {
         loadDevices();   // registro apagado -> atualiza a tabela
-      } else if (msg.type === "pong" || msg.type === "cmd_ack" || msg.type === "welcome") {
-        // acks/welcome: aparecem como eventos de log do servidor
+      } else if (msg.type === "cmd_ack") {
+        // resposta REAL do agente a um comando — falha não pode ser
+        // silenciosa (ex.: burnin_stop recusado pelo lab)
+        if (msg.ok === false) {
+          log({ type: "log", level: "error", device: msg.device,
+            message: `comando ${msg.command}: ${msg.message}` });
+        }
+      } else if (msg.type === "pong" || msg.type === "welcome") {
+        // pong/welcome silenciosos
       } else {
         log(msg);
       }

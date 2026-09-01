@@ -175,7 +175,12 @@ class AgentClient:
         if self.monitor is not None:
             extra = {k: v for k, v in msg.items()
                      if k not in ("type", "device", "command", "reason")}
-            if command == "rerun":
+            if command == "burnin_stop":
+                # broadcast: o agente não precisa saber QUAL worker tem o
+                # burn-in ativo — manda para todos (os demais descartam)
+                ok, message = self.monitor.send_command_all(
+                    command, msg.get("reason"), **extra)
+            elif command == "rerun":
                 ok, message = self.monitor.request_run(key)
             else:
                 ok, message = self.monitor.send_command(
