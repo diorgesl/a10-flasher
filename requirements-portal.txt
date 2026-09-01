@@ -1,8 +1,10 @@
 # Dependências do PORTAL apenas (a imagem do servidor não precisa de
 # pyserial; o portal usa urllib no notifier e no relatório LLM — sem
-# requests; o PDF usa fpdf2, puro Python, sem libs de sistema).
+# requests; o PDF usa reportlab, puro Python, sem libs de sistema; a
+# DejaVu Sans vem empacotada em a10flash/fonts/).
 fastapi>=0.110
 uvicorn>=0.29
 websockets>=12.0
 pyyaml>=6.0
-fpdf2>=2.8
+reportlab>=4.0
+pypdf>=4.0  # só para extrair o texto do PDF nos testes (test_report.py)

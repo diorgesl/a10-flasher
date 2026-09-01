@@ -4,15 +4,16 @@ A chamada HTTP ao DeepSeek é a única fronteira mockada (sem rede nos
 testes); o resto — montagem do prompt, parsing e PDF — é código real.
 """
 
+import io
 import json
 import os
-import re
 import sys
-import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import urllib.error  # noqa: E402
+
+from pypdf import PdfReader  # noqa: E402
 
 from a10flash import report  # noqa: E402
 
@@ -42,6 +43,10 @@ ANALISE = {
     "firmware": "ACOS 5.2.1-P14, atualizado no ciclo.",
     "interfaces": "Todas as interfaces UP (2/2).",
     "licencas": "License Type: STANDARD ativa, renovação 2027.",
+    "licencas_table": [
+        {"licenca": "CGN", "expiracao": "Sem expiração"},
+        {"licenca": "SLB", "expiracao": "Sem expiração"},
+    ],
     "hardware": "Ventoinhas funcionando bem, fontes e temperatura normais.",
     "hardware_table": [
         {"item": "Ventoinha 1", "status": "OK"},
@@ -52,7 +57,7 @@ ANALISE = {
     "burnin": "Teste de carga TRex aprovado: 24h a 1000 cps, pico de 1.20 Gbps.",
     "uptime": "1d 1h 1m",
     "kpis": [
-        {"rotulo": "Uptime máximo", "valor": "1d 1h 1m"},
+        {"rotulo": "Uptime registrado", "valor": "1d 1h 1m"},
         {"rotulo": "Modelo", "valor": "TH5430S"},
         {"rotulo": "Carga máxima", "valor": "1.20 Gbps"},
         {"rotulo": "Licenças", "valor": "Ativa"},
@@ -91,23 +96,10 @@ def _patch_urlopen(fn):
 
 # ------------------------------------------------------------- PDF
 def _pdf_texto(pdf_bytes):
-    """Texto dos streams do PDF (descomprime flate — fpdf2 comprime).
-
-    Usa o `/Length N` de cada stream (tamanho comprimido exato): a busca
-    sequencial por "stream" quebra em PDFs multipágina, porque dados
-    comprimidos podem conter a sequência "stream"/"endstream" por acaso.
-    """
-    s = pdf_bytes.decode("latin-1")
-    partes = []
-    for m in re.finditer(r"/Length\s+(\d+)\s+>>\s*stream\r?\n", s):
-        n = int(m.group(1))
-        raw = s[m.end():m.end() + n]
-        try:
-            partes.append(zlib.decompress(raw.encode("latin-1"))
-                          .decode("latin-1"))
-        except zlib.error:
-            partes.append(raw)  # stream sem compressão
-    return "".join(partes)
+    """Texto do PDF via pypdf (usa o ToUnicode que o ReportLab embute —
+    o ✓ e o pt-BR saem como texto real, sem parsing de stream)."""
+    return "\n".join(p.extract_text() or ""
+                     for p in PdfReader(io.BytesIO(pdf_bytes)).pages)
 
 
 def test_build_pdf_gera_pdf_valido_com_secoes_e_acentos():
@@ -119,16 +111,17 @@ def test_build_pdf_gera_pdf_valido_com_secoes_e_acentos():
     assert "Relatório do equipamento A10TH-ABC123" in texto
     assert "1.20 Gbps" in texto
     assert "1d 1h 1m" in texto
-    # seções novas do relatório de aprovação operacional
-    # (parênteses escapados \( \) no stream do PDF — sem eles na busca)
+    # seções do relatório de aprovação operacional
     for rotulo in ("Interfaces", "Hardware", "Teste de carga",
                    "Maior uptime registrado", "Aprovação"):
         assert rotulo in texto
-    # cards de indicadores + tabela do hardware
-    assert "Uptime máximo" in texto
-    assert "Modelo" in texto and "Carga máxima" in texto
+    # cards de indicadores (normalizados) + tabelas de hardware e licenças
+    assert "Uptime registrado em teste" in texto
+    assert "Modelo" in texto and "Carga testada" in texto
     assert "Situação" in texto
     assert "Ventoinha 1" in texto
+    assert "Expiração" in texto and "CGN" in texto
+    assert "Sem expiração" in texto
     # selo de aprovação (verde) quando o LLM aprovou
     assert "APROVADO PARA OPERAÇÃO" in texto
 
@@ -171,12 +164,30 @@ def test_build_pdf_selo_nao_aprovado_quando_aprovado_false():
     assert "NÃO APROVADO" in texto
 
 
-def test_build_pdf_substitui_caracteres_fora_do_latin1():
-    """Texto com aspas curvas vira latin-1 (core fonts não têm Unicode)."""
+def test_build_pdf_firmware_mostra_atualizado_quando_upgraded():
+    """Registro com upgraded=True -> seção Firmware termina em
+    'Atualizado ✓' (a DejaVu empacotada cobre o ✓ como texto real)."""
+    texto = _pdf_texto(report.build_pdf(ANALISE, {"upgraded": True}))
+    assert "Atualizado" in texto and "✓" in texto
+    # sem o flag, o sufixo não aparece
+    texto2 = _pdf_texto(report.build_pdf(ANALISE))
+    assert "Atualizado" not in texto2
+
+
+def test_build_pdf_mantem_unicode_do_pt_br_com_dejavu():
+    """Com a DejaVu empacotada, aspas curvas e travessão saem nativos
+    (o ReportLab embeute o ToUnicode — sem transliteração)."""
     analise = {**ANALISE, "resumo": "“Equipamento OK” — ver detalhes."}
     texto = _pdf_texto(report.build_pdf(analise))
-    assert '"Equipamento OK"' in texto
-    assert "- ver detalhes." in texto
+    assert "“Equipamento OK”" in texto
+    assert "— ver detalhes." in texto
+
+
+def test_latin1_translitera_no_fallback_sem_dejavu():
+    """Sem a fonte (fallback Helvetica), o pt-BR vira ascii aproximado."""
+    assert report._latin1("“Equipamento OK” — ver detalhes.") \
+        == '"Equipamento OK" - ver detalhes.'
+    assert report._latin1("aéçãõ ✓") == "aéçãõ ?"
 
 
 # ------------------------------------------------------- prompt/LLM
@@ -220,27 +231,30 @@ def test_fmt_uptime_formato_acos():
     assert report._fmt_uptime(None) is None
 
 
-def test_normaliza_kpis_carga_vira_gbps_e_interfaces_vira_modelo():
-    """KPI de carga mostra o pico de tráfego em Gbps (não cps) e o de
-    interfaces é trocado pelo modelo do equipamento."""
+def test_normaliza_kpis_carga_vira_duracao_e_interfaces_vira_modelo():
+    """KPI de carga vira a duração testada em horas (não cps/Gbps), o de
+    interfaces é trocado pelo modelo e o de uptime ganha o rótulo do
+    modo teste."""
     kpis = [
         {"rotulo": "Carga TRex", "valor": "10000 cps"},
         {"rotulo": "Interfaces UP", "valor": "14/14"},
+        {"rotulo": "Uptime máximo", "valor": "12d"},
         {"rotulo": "Licenças", "valor": "Ativa"},
     ]
     record = {"model": "TH5430S"}
-    runs = [{"traffic": {"tx_bps": 1200000000, "rx_bps": 800000000}}]
+    runs = [{"duration_h": 24.0}]
     out = report._normaliza_kpis(kpis, record, runs)
-    assert out[0] == {"rotulo": "Carga máxima", "valor": "1.20 Gbps"}
+    assert out[0] == {"rotulo": "Carga testada", "valor": "24 horas"}
     assert out[1] == {"rotulo": "Modelo", "valor": "TH5430S"}
-    assert out[2]["rotulo"] == "Licenças"  # inalterado
+    assert out[2] == {"rotulo": "Uptime registrado em teste", "valor": "12d"}
+    assert out[3]["rotulo"] == "Licenças"  # inalterado
 
 
-def test_normaliza_kpis_sem_trafego_mantem_valor_do_llm():
-    """Sem pico de tráfego (teste sem stats), o valor do LLM é mantido."""
+def test_normaliza_kpis_sem_duracao_mantem_valor_do_llm():
+    """Sem duração do teste (dados ausentes), o valor do LLM é mantido."""
     kpis = [{"rotulo": "Carga máxima", "valor": "1000 cps"}]
     out = report._normaliza_kpis(kpis, {}, [])
-    assert out[0] == {"rotulo": "Carga máxima", "valor": "1000 cps"}
+    assert out[0] == {"rotulo": "Carga testada", "valor": "1000 cps"}
 
 
 def test_analyze_with_llm_envia_payload_correto_e_parseia_json():
