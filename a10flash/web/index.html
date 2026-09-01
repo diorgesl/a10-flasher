@@ -271,6 +271,13 @@
     aborted: ["abortado", "st-aborted"],
     manual_required: ["intervenção manual", "st-manual_required"],
     test_mode: ["modo teste", "st-running"],
+    // o worker publica "burnin" durante e "burnin_<verdict>" ao final
+    // (ver _run_burnin) — sem estas chaves o badge caía em "desconhecido"
+    burnin: ["burn-in", "st-running"],
+    "burnin_pass": ["burn-in concluído", "st-success"],
+    "burnin_fail": ["burn-in reprovou", "st-failed"],
+    "burnin_interrupted": ["burn-in interrompido", "st-waiting"],
+    "burnin_aborted": ["burn-in abortado", "st-aborted"],
   };
   // trilho do ciclo (sequência real do worker)
   const RAIL = [
