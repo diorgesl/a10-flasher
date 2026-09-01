@@ -271,6 +271,21 @@ try:
 except Exception:  # fonte ausente: Helvetica cobre o latin-1
     pass
 
+# Font Awesome 6 Solid (a10flash/fonts/fa-solid-900.ttf): ícones reais
+# nas faixas/tabelas/cards (o glifo é texto, embutido como subset pelo
+# ReportLab). Sem o arquivo, cai para os ícones vetoriais desenhados.
+_ICONE_FONTE = None
+try:
+    pdfmetrics.registerFont(
+        TTFont("FontAwesome", str(_FONTES_DIR / "fa-solid-900.ttf")))
+    _ICONE_FONTE = "FontAwesome"
+except Exception:
+    pass
+
+# margem lateral do conteúdo (menor que o padrão do A4 para caber mais)
+_MARGEM_X = 12 * mm
+_LARG = A4[0] - 2 * _MARGEM_X
+
 _REPLACEMENTS = str.maketrans({
     "‘": "'", "’": "'", "“": '"', "”": '"',
     "–": "-", "—": "-", "…": "...", " ": " ",
@@ -300,6 +315,13 @@ def _para(value):
     return html.escape(_texto(value))
 
 
+def _checa_xml(cor):
+    """Check colorido para Paragraph: glifo Font Awesome ou ✓ simples."""
+    if _ICONE_FONTE:
+        return f'<font name="FontAwesome" color="{cor}">&#xf058;</font> '
+    return f'<font color="{cor}">✓ </font>'
+
+
 _SECTIONS = (
     ("resumo", "Resumo executivo"),
     ("identificacao", "Identificação"),
@@ -313,16 +335,23 @@ _SECTIONS = (
 )
 
 _ICONES = {
-    "resumo": "doc",
-    "identificacao": "id",
-    "firmware": "chip",
-    "interfaces": "ports",
-    "licencas": "key",
-    "hardware": "fan",
-    "burnin": "bars",
-    "uptime": "clock",
-    "aprovacao": "check",
+    "resumo": "",          # file-lines
+    "identificacao": "",   # id-card
+    "firmware": "",        # microchip
+    "interfaces": "",      # network-wired
+    "licencas": "",        # key
+    "hardware": "",        # fan
+    "burnin": "",          # chart-column
+    "uptime": "",          # clock
+    "aprovacao": "",       # circle-check
 }
+_ICONES_VETOR = {  # fallback sem Font Awesome (ícones desenhados)
+    "": "doc", "": "id", "": "chip", "": "ports",
+    "": "key", "": "fan", "": "bars", "": "clock",
+    "": "check",
+}
+_FA_CHECK = ""   # circle-check (✅)
+_FA_X = ""       # circle-xmark (✖)
 
 _AZUL = colors.HexColor("#102A5A")
 _AZUL_CLARO = colors.HexColor("#7C9CCD")
@@ -349,12 +378,20 @@ _ESTILO_CELULA_C = ParagraphStyle(
 
 
 def _desenha_icone(c, nome, x, y, tam, cor, cor2):
-    """Ícone vetorial em duas cores (corpo `cor`, detalhe `cor2`).
+    """Ícone de seção: glifo Font Awesome (cor `cor`) ou, sem a fonte,
+    vetor desenhado em duas cores (corpo `cor`, detalhe `cor2`).
 
-    Desenhado no canvas (coordenadas com y para cima), sem fontes
-    extras — corpo branco com detalhe verde sobre as faixas coloridas.
+    Os glifos da FA têm o centro da tinta em +0.38em da linha de base —
+    para centralizar no quadrado, a base vai em y + 0.12*tam.
     """
     c.saveState()
+    if _ICONE_FONTE:
+        c.setFillColor(cor)
+        c.setFont(_ICONE_FONTE, tam)
+        c.drawCentredString(x + tam / 2, y + 0.12 * tam, nome)
+        c.restoreState()
+        return
+    nome = _ICONES_VETOR.get(nome, "doc")
     c.setLineWidth(0.4)
     cx, cy = x + tam / 2, y + tam / 2
     if nome == "doc":
@@ -480,16 +517,21 @@ class _CardKpi(Flowable):
         c.setStrokeColor(_BORDA_CARD)
         c.setLineWidth(0.4)
         c.roundRect(0, 0, self.width, self.height, 2 * mm, stroke=1, fill=1)
-        # LED com brilho real (transparência em vez de círculos escalonados)
-        lx, ly, r = self.width - 5 * mm, self.height - 5 * mm, 1.4 * mm
+        # check (✅) colorido no canto, com brilho real ao redor
+        lx, ly = self.width - 5 * mm, self.height - 5 * mm
         c.setFillColor(_HALO_VERDE if self.ok else _HALO_VERMELHO)
         c.setFillAlpha(0.35)
-        c.circle(lx, ly, r * 2.2, stroke=0, fill=1)
+        c.circle(lx, ly, 3.2 * mm, stroke=0, fill=1)
         c.setFillAlpha(1)
         c.setFillColor(_VERDE_CLARO if self.ok else _VERMELHO)
-        c.circle(lx, ly, r, stroke=0, fill=1)
-        c.setFillColor(colors.white)
-        c.circle(lx - r * 0.3, ly + r * 0.35, r * 0.4, stroke=0, fill=1)
+        if _ICONE_FONTE:
+            c.setFont(_ICONE_FONTE, 5 * mm)
+            c.drawCentredString(lx, ly - 0.38 * 5 * mm,
+                                _FA_CHECK if self.ok else _FA_X)
+        else:  # fallback: LED desenhado
+            c.circle(lx, ly, 1.4 * mm, stroke=0, fill=1)
+            c.setFillColor(colors.white)
+            c.circle(lx - 0.4 * mm, ly + 0.5 * mm, 0.55 * mm, stroke=0, fill=1)
         c.setFillColor(_CINZA)
         c.setFont(_FONTE, 8)
         c.drawString(4 * mm, self.height - 5.6 * mm,
@@ -588,8 +630,8 @@ def _tabela_hardware(rows):
         ok = any(p in status.upper() for p in
                  ("OK", "ATIVO", "NORMAL", "FUNCIONANDO"))
         cor = _VERDE if ok else _VERMELHO
-        corpo = f'<font color="{cor}">✓ {status}</font>' if ok \
-            else f'<font color="{cor}">{status}</font>'
+        checa = _checa_xml(cor) if ok else ""
+        corpo = f'<font color="{cor}">{checa}{status}</font>'
         dados.append([Paragraph(item, _ESTILO_CELULA),
                       Paragraph(corpo, _ESTILO_CELULA_C)])
     tabela = Table(dados, colWidths=[None, 40 * mm])
@@ -633,11 +675,11 @@ def _tabela_licencas(rows):
             sem = any(p in exp.upper() for p in
                       ("SEM", "PERMANENTE", "NUNCA", "ILIMITADA"))
             cor = _VERDE if sem else _CINZA
-            cel.append(Paragraph(nome, _ESTILO_CELULA))
+            cel.append(Paragraph(_checa_xml(_VERDE) + nome, _ESTILO_CELULA))
             cel.append(Paragraph(f'<font color="{cor}">{exp}</font>',
                                  _ESTILO_CELULA_C))
         dados.append(cel)
-    col = (A4[0] - 40 * mm) / 4
+    col = _LARG / 4
     tabela = Table(dados, colWidths=[col] * 4)
     tabela.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), _AZUL),
@@ -665,24 +707,45 @@ def _amostrar(rows, n=24):
 
 
 def _desenha_header(c, titulo):
-    """Faixa do topo (largura total da página, só na primeira)."""
+    """Faixa do topo (largura total da página, só na primeira). O título
+    quebra em até 2 linhas por palavra em vez de truncar."""
     c.saveState()
     c.setFillColor(_AZUL)
     c.rect(0, A4[1] - 34 * mm, A4[0], 34 * mm, stroke=0, fill=1)
     c.setFillColor(colors.white)
     c.setFont(_FONTE_B, 15)
-    original = _texto(titulo) or "Relatório do equipamento"
-    texto = original
-    larg = A4[0] - 40 * mm
-    while texto and c.stringWidth(texto + "…", _FONTE_B, 15) > larg:
-        texto = texto[:-1]
-    c.drawString(20 * mm, A4[1] - 10 * mm,
-                 texto + "…" if texto != original else texto)
+    linhas = _quebra_linhas(c, _texto(titulo) or "Relatório do equipamento",
+                            _LARG, _FONTE_B, 15, max_linhas=2)
+    for i, linha in enumerate(linhas):
+        c.drawString(_MARGEM_X, A4[1] - 10 * mm - i * 6.5 * mm, linha)
     c.setFont(_FONTE, 9)
-    c.drawString(20 * mm, A4[1] - 21 * mm,
+    c.drawString(_MARGEM_X, A4[1] - 26 * mm,
                  "Relatório de aprovação operacional — gerado em "
                  + time.strftime("%Y-%m-%d %H:%M"))
     c.restoreState()
+
+
+def _quebra_linhas(c, texto, larg, fonte, tam, max_linhas=2):
+    """Quebra o texto em linhas por palavra; a última linha que não
+    couber é truncada em caractere (sem '…' — nunca vaza da faixa)."""
+    linhas, atual = [], ""
+    for pal in texto.split():
+        if atual and c.stringWidth(atual + " " + pal, fonte, tam) <= larg:
+            atual += " " + pal
+        elif not atual:
+            atual = pal
+        else:
+            linhas.append(atual)
+            atual = pal
+            if len(linhas) == max_linhas:
+                break
+    if atual and len(linhas) < max_linhas:
+        linhas.append(atual)
+    while linhas and c.stringWidth(linhas[-1], fonte, tam) > larg:
+        linhas[-1] = linhas[-1][:-1]
+        if not linhas[-1]:
+            linhas.pop()
+    return linhas or [""]
 
 
 def _rodape(c, doc):
@@ -707,7 +770,7 @@ def _monta_story(analysis, record):
         grid = [cards[i:i + 2] for i in range(0, len(cards), 2)]
         if len(grid[-1]) == 1:
             grid[-1].append("")
-        grade = Table(grid, colWidths=[(A4[0] - 40 * mm) / 2] * 2)
+        grade = Table(grid, colWidths=[_LARG / 2] * 2)
         grade.setStyle(TableStyle([
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
             ("LEFTPADDING", (0, 0), (-1, -1), 3 * mm),
@@ -729,7 +792,10 @@ def _monta_story(analysis, record):
         corpo = _para(conteudo)
         if chave == "firmware" and (record or {}).get("upgraded"):
             corpo = corpo.rstrip() + \
-                '<br/><font color="#146E3C"><b>Atualizado ✓</b></font>'
+                f'<br/><font color="#146E3C"><b>Atualizado {_checa_xml(_VERDE)}</b></font>'
+        elif chave == "burnin" and runs and runs[0].get("verdict") == "pass":
+            corpo = corpo.rstrip() + \
+                f'<br/><font color="#146E3C"><b>Aprovado {_checa_xml(_VERDE)}</b></font>'
         story.append(Paragraph(corpo, _ESTILO_CORPO))
         if chave == "hardware":
             story += _tabela_hardware(analysis.get("hardware_table"))
@@ -772,7 +838,7 @@ def build_pdf(analysis, record=None):
     buffer = io.BytesIO()
     doc = BaseDocTemplate(
         buffer, pagesize=A4,
-        leftMargin=20 * mm, rightMargin=20 * mm,
+        leftMargin=_MARGEM_X, rightMargin=_MARGEM_X,
         topMargin=44 * mm, bottomMargin=20 * mm,
         title="Relatório do equipamento", author="A10 Flash",
     )
@@ -783,8 +849,10 @@ def build_pdf(analysis, record=None):
                             or "Relatório do equipamento")
         _rodape(c, d)
 
-    frame = Frame(20 * mm, 20 * mm, A4[0] - 40 * mm, A4[1] - 64 * mm,
-                  id="frame")
+    # paddings zerados: o conteúdo ocupa exatamente _LARG (o default de
+    # 6pt por lado faria as tabelas com colWidths explícitos vazarem)
+    frame = Frame(_MARGEM_X, 20 * mm, _LARG, A4[1] - 64 * mm, id="frame",
+                  leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0)
     doc.addPageTemplates(
         [PageTemplate(id="pagina", frames=[frame], onPage=_pagina)])
     doc.build(_monta_story(analysis, record))

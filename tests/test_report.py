@@ -124,6 +124,8 @@ def test_build_pdf_gera_pdf_valido_com_secoes_e_acentos():
     assert "Sem expiração" in texto
     # selo de aprovação (verde) quando o LLM aprovou
     assert "APROVADO PARA OPERAÇÃO" in texto
+    # check verde da Font Awesome (U+F058 circle-check) embutido
+    assert "" in texto
 
 
 def test_build_pdf_graficos_usam_series_do_registro():
@@ -136,6 +138,7 @@ def test_build_pdf_graficos_usam_series_do_registro():
         ],
         "burnin_runs": [{
             "run_id": "r1",
+            "verdict": "pass",
             "samples": [
                 {"ts": 1.0, "tx_bps": 500000000, "rx_bps": 400000000},
                 {"ts": 2.0, "tx_bps": 800000000, "rx_bps": 600000000},
@@ -147,6 +150,8 @@ def test_build_pdf_graficos_usam_series_do_registro():
     assert "máx: 0d 3h 0m" in texto
     assert "Tráfego no teste TRex" in texto
     assert "máx: 800.0 Mbps" in texto
+    # teste aprovado -> seção de carga termina em "Aprovado" + check
+    assert "Aprovado" in texto and "" in texto
 
 
 def test_build_pdf_sem_series_nao_desenha_graficos():
@@ -166,9 +171,10 @@ def test_build_pdf_selo_nao_aprovado_quando_aprovado_false():
 
 def test_build_pdf_firmware_mostra_atualizado_quando_upgraded():
     """Registro com upgraded=True -> seção Firmware termina em
-    'Atualizado ✓' (a DejaVu empacotada cobre o ✓ como texto real)."""
+    'Atualizado' com check verde (glifo da Font Awesome embutida)."""
     texto = _pdf_texto(report.build_pdf(ANALISE, {"upgraded": True}))
-    assert "Atualizado" in texto and "✓" in texto
+    assert "Atualizado" in texto
+    assert "" in texto  # circle-check da Font Awesome
     # sem o flag, o sufixo não aparece
     texto2 = _pdf_texto(report.build_pdf(ANALISE))
     assert "Atualizado" not in texto2
