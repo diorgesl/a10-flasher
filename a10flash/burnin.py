@@ -197,6 +197,30 @@ class BurninController:
                 if attempt == 3 or not self._relogin():
                     raise
 
+    def _discover_ports(self, model, t):
+        """`show interfaces brief` -> (inside, outside) validados.
+
+        Se a resposta não tiver NENHUMA porta ethernet (caixa recém-
+        resetada ainda inicializando, ou saída truncada de sessão
+        reutilizada — o "sem portas ethernet no show interfaces brief"),
+        reloga numa sessão limpa e pede UMA vez de novo antes de
+        desistir. "Portas insuficientes" (achou, mas poucas) é erro
+        real de modelo — não repete."""
+        try:
+            brief = self._cmd("show interfaces brief", timeout=60)
+            return pick_lsn_ports(model, brief,
+                                  t.get("trailing_highspeed_ports"))
+        except ValueError as exc:
+            if "sem portas ethernet" not in str(exc):
+                raise BurninConfigError(f"regra de portas: {exc}")
+            self._relogin()
+            try:
+                brief = self._cmd("show interfaces brief", timeout=60)
+                return pick_lsn_ports(model, brief,
+                                      t.get("trailing_highspeed_ports"))
+            except ValueError as retry_exc:
+                raise BurninConfigError(f"regra de portas: {retry_exc}")
+
     def _uptime(self):
         """`show version` -> uptime_s (None se não conseguiu). Reloga se
         a sessão caiu — a caixa reiniciando derruba o console."""
@@ -269,14 +293,12 @@ class BurninController:
                 raise BurninConfigError(f"template LSN: {exc}")
             # 1a) caixa recém-resetada: interfaces vêm DESATIVADAS e o
             # brief não mostra portas utilizáveis — ativar as portas do
-            # template ANTES da descoberta (porta rejeitada é ignorada)
+            # template ANTES da descoberta (porta rejeitada é ignorada).
+            # `terminal length 0` primeiro: sessão reutilizada de acesso
+            # manual pode estar com paginação ligada (brief cortado).
+            self._cmd("terminal length 0")
             self._enable_data_ports(self._template_ports(template_text))
-            brief = self._cmd("show interfaces brief", timeout=60)
-            try:
-                inside, outside = pick_lsn_ports(
-                    model, brief, t.get("trailing_highspeed_ports"))
-            except ValueError as exc:
-                raise BurninConfigError(f"regra de portas: {exc}")
+            inside, outside = self._discover_ports(model, t)
             lines = render_lsn_template(
                 template_text, inside, outside,
                 t.get("extra_enable_ports", []))

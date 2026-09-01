@@ -516,6 +516,7 @@ def test_burnin_ativa_portas_antes_da_descoberta(monkeypatch):
     ctrl.run()
     cmds = cli.cmds
     brief_at = cmds.index("show interfaces brief")
+    assert cmds.index("terminal length 0") < brief_at  # sem paginação
     assert cmds.index("configure terminal") < brief_at
     assert cmds.index("interface ethernet 1") < brief_at
     assert cmds.index("interface ethernet 14") < brief_at
@@ -608,6 +609,71 @@ def test_burnin_reloga_duas_vezes_quando_sessao_cai(monkeypatch):
     assert res["verdict"] == "pass"
     assert cli.login_calls == 2
     assert "write memory" in cli.written
+
+
+class EmptyBriefCli(StubCli):
+    """1º `show interfaces brief` volta sem NENHUMA porta (caixa ainda
+    inicializando pós-reset, ou saída truncada de sessão reutilizada)
+    — após relogin numa sessão limpa, resposta completa."""
+
+    def __init__(self):
+        super().__init__()
+        self.brief_calls = 0
+
+    def cmd(self, command, timeout=30):
+        if command == "show interfaces brief":
+            self.brief_calls += 1
+            if self.brief_calls == 1:
+                return "Port  Link\n"   # header, sem nenhum ethernet N
+        return super().cmd(command, timeout=timeout)
+
+
+def test_burnin_brief_sem_portas_reloga_e_pede_de_novo(monkeypatch):
+    """Brief sem portas ('sem portas ethernet no show interfaces
+    brief') não desiste na hora: reloga numa sessão limpa e pede UMA
+    vez de novo."""
+    monkeypatch.setattr(os.path, "exists", lambda p: True)
+    clock = FakeClock()
+    cli = EmptyBriefCli()
+    bus = FakeBus()
+    erased = []
+    ctrl = make_ctrl(clock=clock, cli=cli, bus=bus,
+                     do_erase=lambda: erased.append("erase") or cli)
+    res = ctrl.run()
+    assert res["verdict"] == "pass"
+    assert cli.brief_calls == 2
+    assert cli.login_calls >= 1
+    assert "write memory" in cli.written
+    assert erased == ["erase"]
+
+
+class AlwaysEmptyBriefCli(EmptyBriefCli):
+    """Brief SEMPRE volta sem portas — nem relogin ajuda."""
+
+    def cmd(self, command, timeout=30):
+        if command == "show interfaces brief":
+            self.brief_calls += 1
+            return "Port  Link\n"
+        return super().cmd(command, timeout=timeout)
+
+
+def test_burnin_brief_sem_portas_depois_de_relogin_aborta(monkeypatch):
+    """Brief sem portas nas DUAS tentativas (mesmo com relogin) vira
+    `aborted` — sem escalar para o worker."""
+    monkeypatch.setattr(os.path, "exists", lambda p: True)
+    clock = FakeClock()
+    cli = AlwaysEmptyBriefCli()
+    bus = FakeBus()
+    trex = FakeTRexClient()
+    erased = []
+    ctrl = make_ctrl(clock=clock, cli=cli, bus=bus, trex=trex,
+                     do_erase=lambda: erased.append("erase") or cli)
+    res = ctrl.run()
+    assert res["verdict"] == "aborted"
+    assert "regra de portas" in res["reason"]
+    assert cli.brief_calls == 2
+    assert trex.start_traffic_called is False
+    assert erased == ["erase"]
 
 
 def test_config_line_failed_permission_denied():

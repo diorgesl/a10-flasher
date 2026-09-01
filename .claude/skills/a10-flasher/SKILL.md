@@ -82,7 +82,13 @@ acompanhamento e registro dos equipamentos.
    mostra portas utilizáveis — o setup ATIVA as portas declaradas no
    template (`_template_ports`, fallback 1..14; `configure terminal` +
    `interface ethernet N`/`enable` + `end`, tolerante a porta rejeitada)
-   ANTES do `show interfaces brief`. `_cmd` tenta 3x com 2 relogins
+   ANTES do `show interfaces brief`, e reafirma `terminal length 0`
+   primeiro (sessão reutilizada de acesso manual pode ter paginação
+   ligada — brief cortado no ---MORE---). `_discover_ports` valida o
+   brief: resposta sem NENHUMA porta ethernet (caixa ainda inicializando
+   pós-reset ou saída truncada) reloga numa sessão limpa e pede UMA vez
+   de novo antes de `aborted`; "portas insuficientes" (achou mas poucas)
+   é erro real de modelo, não repete. `_cmd` tenta 3x com 2 relogins
    (getty pode reiniciar mais de uma vez pós-reset). Qualquer falha de
    sessão que nem o relogin recupera vira `aborted` ("falha no setup do
    burn-in") DENTRO do controller — nunca escapa para o worker
