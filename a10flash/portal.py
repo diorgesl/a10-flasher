@@ -108,16 +108,19 @@ class PortalServer:
                                     detail="equipamento não encontrado")
             # dados de teste/histórico do DB para o relatório (o LLM não
             # vê a coleção inteira): maior uptime do modo teste + runs de
-            # burn-in com o agregado de tráfego de cada um.
+            # burn-in com o agregado de tráfego e as amostras de cada um
+            # (séries para os gráficos do PDF).
             rec = dict(rec)
             rec["max_uptime_s"] = self.store.max_uptime(serial)
+            rec["uptime_series"] = self.store.list_uptime(serial)
             runs = self.store.list_burnin_runs(serial)
             for run in runs:
                 run["traffic"] = self.store.burnin_traffic_stats(run["run_id"])
+                run["samples"] = self.store.list_burnin_samples(run["run_id"])
             rec["burnin_runs"] = runs
             try:
                 analysis = analyze_with_llm(rec, self.cfg.get("llm") or {})
-                pdf = build_pdf(analysis)
+                pdf = build_pdf(analysis, rec)
             except ReportError as exc:
                 raise HTTPException(status_code=exc.status, detail=str(exc))
             return Response(

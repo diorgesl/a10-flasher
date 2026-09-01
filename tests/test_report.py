@@ -6,6 +6,7 @@ testes); o resto — montagem do prompt, parsing e PDF — é código real.
 
 import json
 import os
+import re
 import sys
 import zlib
 
@@ -41,8 +42,21 @@ ANALISE = {
     "firmware": "ACOS 5.2.1-P14, atualizado no ciclo.",
     "interfaces": "Todas as interfaces UP (2/2).",
     "licencas": "License Type: STANDARD ativa, renovação 2027.",
+    "hardware": "Ventoinhas funcionando bem, fontes e temperatura normais.",
+    "hardware_table": [
+        {"item": "Ventoinha 1", "status": "OK"},
+        {"item": "Ventoinha 2", "status": "OK"},
+        {"item": "Fonte 1", "status": "OK"},
+        {"item": "Temperatura", "status": "OK"},
+    ],
     "burnin": "Teste de carga TRex aprovado: 24h a 1000 cps, pico de 1.20 Gbps.",
     "uptime": "1d 1h 1m",
+    "kpis": [
+        {"rotulo": "Uptime máximo", "valor": "1d 1h 1m"},
+        {"rotulo": "Interfaces UP", "valor": "2/2"},
+        {"rotulo": "Carga TRex", "valor": "1000 cps"},
+        {"rotulo": "Licenças", "valor": "Ativa"},
+    ],
     "aprovacao": "Equipamento OPERACIONAL e APROVADO para operação.",
     "aprovado": True,
 }
@@ -77,29 +91,22 @@ def _patch_urlopen(fn):
 
 # ------------------------------------------------------------- PDF
 def _pdf_texto(pdf_bytes):
-    """Texto dos streams do PDF (descomprime flate — fpdf2 comprime)."""
+    """Texto dos streams do PDF (descomprime flate — fpdf2 comprime).
+
+    Usa o `/Length N` de cada stream (tamanho comprimido exato): a busca
+    sequencial por "stream" quebra em PDFs multipágina, porque dados
+    comprimidos podem conter a sequência "stream"/"endstream" por acaso.
+    """
     s = pdf_bytes.decode("latin-1")
     partes = []
-    pos = 0
-    while True:
-        i = s.find("stream", pos)
-        if i < 0:
-            break
-        ini = i + 6
-        if s[ini] in "\r\n":
-            ini += 1
-            if s[ini] == "\n":
-                ini += 1
-        fim = s.find("endstream", ini)
-        if fim < 0:
-            break
-        raw = s[ini:fim]
+    for m in re.finditer(r"/Length\s+(\d+)\s+>>\s*stream\r?\n", s):
+        n = int(m.group(1))
+        raw = s[m.end():m.end() + n]
         try:
             partes.append(zlib.decompress(raw.encode("latin-1"))
                           .decode("latin-1"))
         except zlib.error:
             partes.append(raw)  # stream sem compressão
-        pos = fim
     return "".join(partes)
 
 
@@ -114,11 +121,45 @@ def test_build_pdf_gera_pdf_valido_com_secoes_e_acentos():
     assert "1d 1h 1m" in texto
     # seções novas do relatório de aprovação operacional
     # (parênteses escapados \( \) no stream do PDF — sem eles na busca)
-    for rotulo in ("Interfaces", "Teste de carga",
+    for rotulo in ("Interfaces", "Hardware", "Teste de carga",
                    "Maior uptime registrado", "Aprovação"):
         assert rotulo in texto
+    # cards de indicadores + tabela do hardware
+    assert "Uptime máximo" in texto
+    assert "Situação" in texto
+    assert "Ventoinha 1" in texto
     # selo de aprovação (verde) quando o LLM aprovou
     assert "APROVADO PARA OPERAÇÃO" in texto
+
+
+def test_build_pdf_graficos_usam_series_do_registro():
+    """Gráficos desenhados das séries reais do registro (uptime/TRex)."""
+    record = {
+        "uptime_series": [
+            {"ts": 1.0, "uptime_s": 3600},
+            {"ts": 2.0, "uptime_s": 7200},
+            {"ts": 3.0, "uptime_s": 10800},
+        ],
+        "burnin_runs": [{
+            "run_id": "r1",
+            "samples": [
+                {"ts": 1.0, "tx_bps": 500000000, "rx_bps": 400000000},
+                {"ts": 2.0, "tx_bps": 800000000, "rx_bps": 600000000},
+            ],
+        }],
+    }
+    texto = _pdf_texto(report.build_pdf(ANALISE, record))
+    assert "Evolução do uptime no modo teste" in texto
+    assert "máx: 0d 3h 0m" in texto
+    assert "Tráfego no teste TRex" in texto
+    assert "máx: 800.0 Mbps" in texto
+
+
+def test_build_pdf_sem_series_nao_desenha_graficos():
+    """Sem registro/séries o PDF sai sem os gráficos, sem quebrar."""
+    texto = _pdf_texto(report.build_pdf(ANALISE))
+    assert "Evolução do uptime" not in texto
+    assert "Tráfego no teste TRex" not in texto
 
 
 def test_build_pdf_selo_nao_aprovado_quando_aprovado_false():

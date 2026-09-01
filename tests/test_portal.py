@@ -389,6 +389,10 @@ def test_report_endpoint_gera_pdf():
     assert len(runs) == 1 and runs[0]["verdict"] == "pass"
     assert runs[0]["traffic"]["tx_bps"] == 1200000000
     assert runs[0]["traffic"]["errors"] == 0
+    # séries para os gráficos do PDF: amostras do run + histórico de uptime
+    assert runs[0]["samples"][0]["tx_bps"] == 1200000000
+    serie = capturado["rec"]["uptime_series"]
+    assert [s["uptime_s"] for s in serie] == [3600, 90061]  # mais recente 1º
 
     assert r.status_code == 200, r.text
     assert r.headers["content-type"].startswith("application/pdf")
