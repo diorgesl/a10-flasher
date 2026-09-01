@@ -48,13 +48,15 @@ _SYSTEM_PROMPT = (
     '- "hardware_table" (array de objetos {"item", "status"}): tabela '
     'curta do hardware — cada ventoinha, fonte e a temperatura, com '
     'status "OK", "ATENÇÃO" ou "FALHA"\n'
-    '- "burnin" (string): resultado dos testes de carga TRex de forma '
-    "simples (veredito, carga aplicada, duração, tráfego medido)\n"
+    '- "burnin" (string): resultado do ÚLTIMO teste de carga TRex '
+    "aprovado, de forma simples (veredito, carga aplicada, duração, "
+    "tráfego medido) — cite apenas o teste informado, nunca testes "
+    "anteriores ou abortados\n"
     '- "uptime" (string): maior uptime registrado no modo teste, citando '
     "o valor exato informado e explicando o que ele significa\n"
     '- "kpis" (array de 4 objetos {"rotulo", "valor"}): indicadores '
-    'curtos para cards — ex.: Uptime máximo, Interfaces UP, Carga TRex, '
-    "Licenças\n"
+    'curtos para cards — ex.: Uptime máximo, Modelo, Carga máxima '
+    "(pico de tráfego em Gbps), Licenças\n"
     '- "aprovacao" (string): conclusão clara se o equipamento está '
     "OPERACIONAL e APROVADO para trabalhar (ou não, com o motivo)\n"
     '- "aprovado" (booleano): true se o equipamento está operacional e '
@@ -266,31 +268,42 @@ _AZUL = (16, 42, 90)
 _VERDE = (20, 110, 60)
 _VERMELHO = (200, 60, 50)
 _CINZA = (110, 120, 135)
-_FUNDO_CHIP = (226, 233, 245)
 _FUNDO_CARD = (246, 248, 252)
 
 
-def _icone(pdf, nome, x, y, tam, cor):
-    """Ícone vetorial simples (desenhado com primitivas, sem fontes)."""
-    pdf.set_draw_color(*cor)
-    pdf.set_fill_color(*cor)
-    pdf.set_line_width(0.5)
+def _icone(pdf, nome, x, y, tam, cor, cor2):
+    """Ícone vetorial em duas cores (corpo `cor`, detalhe `cor2`).
+
+    Desenhado com primitivas do fpdf2 (sem fontes extras): corpo branco
+    com detalhe verde sobre a faixa de seção colorida.
+    """
     cx, cy = x + tam / 2, y + tam / 2
+    pdf.set_line_width(0.4)
+    pdf.set_draw_color(*cor2)
     if nome == "doc":
-        pdf.rect(x, y, tam * 0.78, tam, style="D")
+        pdf.set_fill_color(*cor)
+        pdf.rect(x, y, tam * 0.78, tam, style="F",
+                 round_corners=True, corner_radius=0.6)
         for i in range(3):
             pdf.line(x + tam * 0.16, y + tam * (0.28 + 0.25 * i),
                      x + tam * 0.62, y + tam * (0.28 + 0.25 * i))
     elif nome == "id":
-        pdf.rect(x, y, tam * 0.95, tam * 0.72, style="D")
-        pdf.ellipse(x + tam * 0.33, y + tam * 0.13, tam * 0.3, tam * 0.3,
+        pdf.set_fill_color(*cor)
+        pdf.rect(x, y, tam * 0.95, tam * 0.72, style="F",
+                 round_corners=True, corner_radius=0.6)
+        pdf.set_fill_color(*cor2)
+        pdf.ellipse(x + tam * 0.36, y + tam * 0.14, tam * 0.28, tam * 0.28,
                     style="F")
-        pdf.line(x + tam * 0.2, y + tam * 0.6, x + tam * 0.75, y + tam * 0.6)
+        pdf.set_fill_color(*cor)
+        pdf.rect(x + tam * 0.2, y + tam * 0.52, tam * 0.55, tam * 0.09,
+                 style="F")
     elif nome == "chip":
+        pdf.set_fill_color(*cor)
         pdf.rect(x + tam * 0.15, y + tam * 0.15, tam * 0.7, tam * 0.7,
-                 style="D")
+                 style="F", round_corners=True, corner_radius=0.6)
+        pdf.set_fill_color(*cor2)
         pdf.rect(x + tam * 0.3, y + tam * 0.3, tam * 0.4, tam * 0.4,
-                 style="D")
+                 style="F")
         for dx in (0.15, 0.85):
             pdf.line(x + tam * dx, y + tam * 0.35, x + tam * dx, y + tam * 0.1)
             pdf.line(x + tam * dx, y + tam * 0.65, x + tam * dx, y + tam * 0.9)
@@ -298,31 +311,51 @@ def _icone(pdf, nome, x, y, tam, cor):
             pdf.line(x + tam * 0.35, y + tam * dy, x + tam * 0.1, y + tam * dy)
             pdf.line(x + tam * 0.65, y + tam * dy, x + tam * 0.9, y + tam * dy)
     elif nome == "ports":
-        pdf.rect(x, y, tam * 0.42, tam * 0.6, style="D")
-        pdf.rect(x + tam * 0.58, y, tam * 0.42, tam * 0.6, style="D")
+        pdf.set_fill_color(*cor)
+        pdf.rect(x, y, tam * 0.42, tam * 0.6, style="F",
+                 round_corners=True, corner_radius=0.5)
+        pdf.rect(x + tam * 0.58, y, tam * 0.42, tam * 0.6, style="F",
+                 round_corners=True, corner_radius=0.5)
         pdf.line(x, y + tam * 0.3, x + tam * 0.42, y + tam * 0.3)
         pdf.line(x + tam * 0.58, y + tam * 0.3, x + tam, y + tam * 0.3)
     elif nome == "key":
-        pdf.ellipse(x, y + tam * 0.3, tam * 0.55, tam * 0.55, style="D")
-        pdf.line(x + tam * 0.55, y + tam * 0.55, x + tam, y + tam * 0.95)
-        pdf.line(x + tam * 0.8, y + tam * 0.75, x + tam * 0.95, y + tam * 0.6)
+        pdf.set_fill_color(*cor)
+        pdf.ellipse(x, y + tam * 0.28, tam * 0.52, tam * 0.52, style="F")
+        pdf.rect(x + tam * 0.48, y + tam * 0.52, tam * 0.5, tam * 0.12,
+                 style="F", round_corners=True, corner_radius=0.4)
+        pdf.set_fill_color(*cor2)
+        pdf.rect(x + tam * 0.52, y + tam * 0.7, tam * 0.08, tam * 0.1,
+                 style="F")
+        pdf.rect(x + tam * 0.72, y + tam * 0.58, tam * 0.08, tam * 0.1,
+                 style="F")
     elif nome == "fan":
+        pdf.set_draw_color(*cor)
         for inicio in (30, 150, 270):
-            pdf.arc(cx, cy, tam * 0.38, inicio, inicio + 95)
-        pdf.ellipse(cx - tam * 0.08, cy - tam * 0.08, tam * 0.16, tam * 0.16,
+            pdf.arc(cx, cy, tam * 0.36, inicio, inicio + 95)
+        pdf.set_fill_color(*cor2)
+        pdf.ellipse(cx - tam * 0.07, cy - tam * 0.07, tam * 0.14, tam * 0.14,
                     style="F")
     elif nome == "bars":
+        pdf.set_fill_color(*cor)
         pdf.rect(x, y + tam * 0.5, tam * 0.24, tam * 0.5, "F")
         pdf.rect(x + tam * 0.38, y + tam * 0.24, tam * 0.24, tam * 0.76, "F")
+        pdf.set_fill_color(*cor2)
         pdf.rect(x + tam * 0.76, y, tam * 0.24, tam, "F")
     elif nome == "clock":
-        pdf.ellipse(x, y, tam, tam, style="D")
-        pdf.line(cx, cy, cx, y + tam * 0.22)
-        pdf.line(cx, cy, x + tam * 0.75, cy)
+        pdf.set_fill_color(*cor)
+        pdf.ellipse(x, y, tam, tam, style="F")
+        pdf.set_fill_color(*cor2)
+        pdf.rect(cx - tam * 0.05, cy - tam * 0.05, tam * 0.1, tam * 0.26,
+                 style="F")
+        pdf.rect(cx - tam * 0.05, cy - tam * 0.05, tam * 0.26, tam * 0.1,
+                 style="F")
     elif nome == "check":
-        pdf.ellipse(x, y, tam, tam, style="D")
-        pdf.line(x + tam * 0.3, cy, x + tam * 0.45, y + tam * 0.62)
-        pdf.line(x + tam * 0.45, y + tam * 0.62, x + tam * 0.72, y + tam * 0.35)
+        pdf.set_fill_color(*cor)
+        pdf.ellipse(x, y, tam, tam, style="F")
+        pdf.set_line_width(0.7)
+        pdf.set_draw_color(*cor2)
+        pdf.line(x + tam * 0.28, cy, x + tam * 0.45, y + tam * 0.62)
+        pdf.line(x + tam * 0.45, y + tam * 0.62, x + tam * 0.74, y + tam * 0.32)
 
 
 def _led(pdf, x, y, r, cor, cor_halo):
@@ -340,8 +373,6 @@ def _led(pdf, x, y, r, cor, cor_halo):
 
 
 _LED_VERDE = ((52, 168, 83), (165, 228, 185))
-_LED_VERMELHO = ((220, 60, 50), (250, 195, 185))
-_LED_AMARELO = ((238, 168, 42), (252, 234, 190))
 
 
 def _quebra_se(pdf, altura):
@@ -352,6 +383,30 @@ def _quebra_se(pdf, altura):
     """
     if pdf.get_y() + altura > pdf.h - pdf.b_margin:
         pdf.add_page()
+
+
+def _normaliza_kpis(kpis, record, runs):
+    """Ajusta os KPIs do LLM para os valores mais informativos.
+
+    - KPI de carga vira o pico de tráfego do último teste em Gbps
+      (mais claro para quem lê do que o cps aplicado);
+    - KPI de interfaces é trocado pelo modelo (as interfaces já são
+      detalhadas na seção própria).
+    """
+    out = [dict(k) for k in (kpis or []) if isinstance(k, dict)][:4]
+    trafego = (runs[0].get("traffic") or {}) if runs else {}
+    pico = max(trafego.get("tx_bps") or 0, trafego.get("rx_bps") or 0)
+    modelo = (record or {}).get("model")
+    for kpi in out:
+        rotulo = (kpi.get("rotulo") or "").lower()
+        if "carga" in rotulo:
+            kpi["rotulo"] = "Carga máxima"
+            if pico:
+                kpi["valor"] = _fmt_bps(pico)
+        elif "interfaces" in rotulo or "portas" in rotulo:
+            kpi["rotulo"] = "Modelo"
+            kpi["valor"] = _latin1(modelo or "—")
+    return out
 
 
 def _kpis(pdf, kpis):
@@ -503,15 +558,10 @@ def build_pdf(analysis, record=None):
     # sem voltar para a margem esquerda a próxima célula explode com
     # "Not enough horizontal space".
     cell = dict(new_x="LMARGIN", new_y="NEXT")
-    # faixa de cabeçalho: gradiente azul (degradê em faixas) + título
-    # em branco + data de geração + fileira de LEDs de status
-    for i in range(10):
-        t = i / 9
-        cor = tuple(round(a + (b - a) * t) for a, b in
-                    zip((10, 28, 58), (46, 90, 148)))
-        pdf.set_fill_color(*cor)
-        pdf.rect(0, i * 3.4, pdf.w, 3.5, "F")
+    # faixa de cabeçalho: azul sólido + título em branco + data de geração
     aprovado = analysis.get("aprovado") is True
+    pdf.set_fill_color(19, 41, 88)
+    pdf.rect(0, 0, pdf.w, 34, "F")
     pdf.set_text_color(255, 255, 255)
     pdf.set_xy(pdf.l_margin, 7)
     pdf.set_font("helvetica", "B", 15)
@@ -522,12 +572,6 @@ def build_pdf(analysis, record=None):
     pdf.multi_cell(0, 5, _latin1(
         "Relatório de aprovação operacional — gerado em "
         + time.strftime("%Y-%m-%d %H:%M")), **cell)
-    # fileira de LEDs de status no rodapé da faixa (verde = aprovado)
-    cor_led = _LED_VERDE if aprovado else _LED_VERMELHO
-    n_led = 12
-    espaco = (pdf.w - pdf.l_margin - pdf.r_margin) / (n_led - 1)
-    for i in range(n_led):
-        _led(pdf, pdf.l_margin + espaco * i, 30.5, 1.1, *cor_led)
     pdf.set_y(38)
     # selo de aprovação (verde/vermelho) com halo de brilho
     selo = "APROVADO PARA OPERAÇÃO" if aprovado else "NÃO APROVADO"
@@ -545,31 +589,29 @@ def build_pdf(analysis, record=None):
     pdf.cell(largura, 10, selo, align="C")
     pdf.set_y(y_selo + 13)
     pdf.set_text_color(40, 40, 40)
-    # cards de indicadores (uptime, interfaces, carga, licenças)
-    _kpis(pdf, analysis.get("kpis"))
     runs = (record or {}).get("burnin_runs") or []
+    # cards de indicadores (uptime, modelo, carga em Gbps, licenças)
+    _kpis(pdf, _normaliza_kpis(analysis.get("kpis"), record, runs))
     for chave, rotulo in _SECTIONS:
         conteudo = analysis.get(chave)
         if not conteudo:
             continue  # seção sem conteúdo não ocupa espaço
-        _quebra_se(pdf, 9)  # cabeçalho da seção não fica órfão no rodapé
-        # ícone + chip de fundo claro + título da seção
-        pdf.set_line_width(0.5)
-        cor_icone = (_VERDE if aprovado else _VERMELHO) \
-            if chave == "aprovacao" else _AZUL
-        _icone(pdf, _ICONES.get(chave, "doc"),
-               pdf.l_margin, pdf.get_y() + 1, 5.5, cor_icone)
-        pdf.set_font("helvetica", "B", 12)
-        x_titulo = pdf.l_margin + 8.5
-        largura = pdf.get_string_width(rotulo) + 8
+        _quebra_se(pdf, 11)  # cabeçalho da seção não fica órfão no rodapé
+        # faixa de seção em largura total: fundo colorido + ícone + título
         y = pdf.get_y()
-        pdf.set_fill_color(*_FUNDO_CHIP)
-        pdf.rect(x_titulo, y, largura, 7,
-                 style="F", round_corners=True, corner_radius=1.5)
-        pdf.set_text_color(*_AZUL)
-        pdf.set_xy(x_titulo + 4, y)
-        pdf.cell(largura - 8, 7, rotulo)
-        pdf.set_y(y + 8)
+        cor_faixa = (_VERDE if aprovado else _VERMELHO) \
+            if chave == "aprovacao" else _AZUL
+        pdf.set_fill_color(*cor_faixa)
+        pdf.rect(pdf.l_margin, y, pdf.w - pdf.l_margin - pdf.r_margin, 8.5,
+                 style="F", round_corners=True, corner_radius=2)
+        _icone(pdf, _ICONES.get(chave, "doc"),
+               pdf.l_margin + 1.5, y + 1.5, 5.5, (255, 255, 255),
+               cor_faixa if chave == "aprovacao" else _VERDE)
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_font("helvetica", "B", 11.5)
+        pdf.set_xy(pdf.l_margin + 9, y + 1.6)
+        pdf.cell(pdf.w - pdf.l_margin - pdf.r_margin - 12, 5.5, rotulo)
+        pdf.set_y(y + 9.5)
         # fio fino abaixo do cabeçalho separa a seção da anterior
         pdf.set_line_width(0.2)
         pdf.set_draw_color(200, 205, 215)

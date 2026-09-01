@@ -117,7 +117,11 @@ class PortalServer:
             for run in runs:
                 run["traffic"] = self.store.burnin_traffic_stats(run["run_id"])
                 run["samples"] = self.store.list_burnin_samples(run["run_id"])
-            rec["burnin_runs"] = runs
+            # só o último teste aprovado vai para o relatório (o LLM não
+            # deve citar testes anteriores ou abortados); sem nenhum
+            # aprovado, fica o mais recente — para explicar por que não
+            aprovados = [r for r in runs if r.get("verdict") == "pass"]
+            rec["burnin_runs"] = (aprovados or runs)[:1]
             try:
                 analysis = analyze_with_llm(rec, self.cfg.get("llm") or {})
                 pdf = build_pdf(analysis, rec)

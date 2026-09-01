@@ -53,8 +53,8 @@ ANALISE = {
     "uptime": "1d 1h 1m",
     "kpis": [
         {"rotulo": "Uptime máximo", "valor": "1d 1h 1m"},
-        {"rotulo": "Interfaces UP", "valor": "2/2"},
-        {"rotulo": "Carga TRex", "valor": "1000 cps"},
+        {"rotulo": "Modelo", "valor": "TH5430S"},
+        {"rotulo": "Carga máxima", "valor": "1.20 Gbps"},
         {"rotulo": "Licenças", "valor": "Ativa"},
     ],
     "aprovacao": "Equipamento OPERACIONAL e APROVADO para operação.",
@@ -126,6 +126,7 @@ def test_build_pdf_gera_pdf_valido_com_secoes_e_acentos():
         assert rotulo in texto
     # cards de indicadores + tabela do hardware
     assert "Uptime máximo" in texto
+    assert "Modelo" in texto and "Carga máxima" in texto
     assert "Situação" in texto
     assert "Ventoinha 1" in texto
     # selo de aprovação (verde) quando o LLM aprovou
@@ -217,6 +218,29 @@ def test_fmt_uptime_formato_acos():
     assert report._fmt_uptime(90061) == "1d 1h 1m"
     assert report._fmt_uptime(0) == "0d 0h 0m"
     assert report._fmt_uptime(None) is None
+
+
+def test_normaliza_kpis_carga_vira_gbps_e_interfaces_vira_modelo():
+    """KPI de carga mostra o pico de tráfego em Gbps (não cps) e o de
+    interfaces é trocado pelo modelo do equipamento."""
+    kpis = [
+        {"rotulo": "Carga TRex", "valor": "10000 cps"},
+        {"rotulo": "Interfaces UP", "valor": "14/14"},
+        {"rotulo": "Licenças", "valor": "Ativa"},
+    ]
+    record = {"model": "TH5430S"}
+    runs = [{"traffic": {"tx_bps": 1200000000, "rx_bps": 800000000}}]
+    out = report._normaliza_kpis(kpis, record, runs)
+    assert out[0] == {"rotulo": "Carga máxima", "valor": "1.20 Gbps"}
+    assert out[1] == {"rotulo": "Modelo", "valor": "TH5430S"}
+    assert out[2]["rotulo"] == "Licenças"  # inalterado
+
+
+def test_normaliza_kpis_sem_trafego_mantem_valor_do_llm():
+    """Sem pico de tráfego (teste sem stats), o valor do LLM é mantido."""
+    kpis = [{"rotulo": "Carga máxima", "valor": "1000 cps"}]
+    out = report._normaliza_kpis(kpis, {}, [])
+    assert out[0] == {"rotulo": "Carga máxima", "valor": "1000 cps"}
 
 
 def test_analyze_with_llm_envia_payload_correto_e_parseia_json():

@@ -370,6 +370,12 @@ def test_report_endpoint_gera_pdf():
                                    50000, 0, 3600)
     portal.store.finish_burnin_run("run-rep", 200.0, "pass",
                                    "24h sem reiniciar", "[]", "ok")
+    # teste reprovado mais recente: não deve ir para o relatório (só o
+    # último aprovado)
+    portal.store.start_burnin_run("run-falho", "A10TH-REP", "TH5430S",
+                                  1000, 3.0, 300.0)
+    portal.store.finish_burnin_run("run-falho", 400.0, "fail",
+                                   "reiniciou sob carga", "[]", "ok")
     capturado = {}
 
     def fake_analyze(rec, cfg):
@@ -383,10 +389,12 @@ def test_report_endpoint_gera_pdf():
     finally:
         portal_mod.analyze_with_llm = old
 
-    # o LLM recebeu o maior uptime do DB e os runs com carga total
+    # o LLM recebeu o maior uptime do DB e SÓ o último teste aprovado
+    # (o run-falho, mais recente e reprovado, é filtrado)
     assert capturado["rec"]["max_uptime_s"] == 90061
     runs = capturado["rec"]["burnin_runs"]
-    assert len(runs) == 1 and runs[0]["verdict"] == "pass"
+    assert len(runs) == 1 and runs[0]["run_id"] == "run-rep"
+    assert runs[0]["verdict"] == "pass"
     assert runs[0]["traffic"]["tx_bps"] == 1200000000
     assert runs[0]["traffic"]["errors"] == 0
     # séries para os gráficos do PDF: amostras do run + histórico de uptime
