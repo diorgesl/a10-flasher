@@ -158,13 +158,43 @@ class BurninController:
             return False
 
     def _cmd(self, command, timeout=30):
-        """cmd com UMA tentativa de relogin (mesmo padrão do
-        _collect_uptime do worker)."""
-        for attempt in (1, 2):
+        """cmd com DUAS tentativas de relogin — logo após o reset o
+        getty pode reiniciar mais de uma vez e derrubar a sessão
+        repetidamente (visto no TH3030S)."""
+        for attempt in (1, 2, 3):
             try:
                 return self.cli.cmd(command, timeout=timeout)
             except Exception:
-                if attempt == 2 or not self._relogin():
+                if attempt == 3 or not self._relogin():
+                    raise
+
+    def _template_ports(self, template_text, default_count=14):
+        """Portas de dados declaradas no template LSN (ex.: 1..14).
+        Sem declaração numérica, assume 1..default_count."""
+        ports = sorted({int(m) for m in
+                        re.findall(r"interface ethernet (\d+)",
+                                   template_text or "")})
+        return ports or list(range(1, default_count + 1))
+
+    def _enable_data_ports(self, ports):
+        """Ativa as portas de dados ANTES da descoberta do brief — caixa
+        recém-resetada vem com as interfaces DESATIVADAS e o `show
+        interfaces brief` não mostra portas utilizáveis. Tolerante:
+        porta que a caixa rejeita é ignorada (o cmd() engole erros).
+        Retenta a sequência INTEIRA se a sessão cair — o relogin volta
+        para o modo exec e a config precisa ser reentrada."""
+        if not ports:
+            return
+        for attempt in (1, 2, 3):
+            try:
+                self._cmd("configure terminal")
+                for port in ports:
+                    self._cmd(f"interface ethernet {port}")
+                    self._cmd("enable")
+                self._cmd("end")
+                return
+            except Exception:
+                if attempt == 3 or not self._relogin():
                     raise
 
     def _uptime(self):
@@ -232,6 +262,15 @@ class BurninController:
         try:
             # 1) portas + template + config LSN
             model = self.device_info.get("model") or ""
+            try:
+                template_text = self._read_file(t.get(
+                    "lsn_config", "trex/config_lsn.conf"))
+            except OSError as exc:
+                raise BurninConfigError(f"template LSN: {exc}")
+            # 1a) caixa recém-resetada: interfaces vêm DESATIVADAS e o
+            # brief não mostra portas utilizáveis — ativar as portas do
+            # template ANTES da descoberta (porta rejeitada é ignorada)
+            self._enable_data_ports(self._template_ports(template_text))
             brief = self._cmd("show interfaces brief", timeout=60)
             try:
                 inside, outside = pick_lsn_ports(
@@ -239,9 +278,8 @@ class BurninController:
             except ValueError as exc:
                 raise BurninConfigError(f"regra de portas: {exc}")
             lines = render_lsn_template(
-                self._read_file(t.get("lsn_config",
-                                      "trex/config_lsn.conf")),
-                inside, outside, t.get("extra_enable_ports", []))
+                template_text, inside, outside,
+                t.get("extra_enable_ports", []))
             for attempt in (1, 2):
                 # queda no meio da config: reloga e reaplica INTEIRA
                 # (idempotente — sem write memory a caixa segue de fábrica)
@@ -348,6 +386,12 @@ class BurninController:
                                  "aborted", "abort do portal", samples,
                                  config_errors)
             raise
+        except Exception as exc:
+            # queda de sessão que nem o relogin recupera (ou erro
+            # inesperado no setup) — NUNCA escalar para o worker
+            # ("Falha irrecuperável: RELIGUE O EQUIPAMENTO NA TOMADA"):
+            # aborta com a caixa conectada para inspeção e nova tentativa
+            verdict, reason = "aborted", f"falha no setup do burn-in: {exc}"
         finally:
             try:
                 self.trex.stop_all()

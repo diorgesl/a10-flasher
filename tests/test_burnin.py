@@ -504,6 +504,112 @@ def test_burnin_apply_config_retenta_inteiro_apos_queda(monkeypatch):
     assert "write memory" in cli.written
 
 
+def test_burnin_ativa_portas_antes_da_descoberta(monkeypatch):
+    """Caixa recém-resetada vem com as interfaces DESATIVADAS: o setup
+    ativa as portas declaradas no template (1..14) ANTES do `show
+    interfaces brief` que descobre inside/outside."""
+    monkeypatch.setattr(os.path, "exists", lambda p: True)
+    clock = FakeClock()
+    cli = StubCli()
+    bus = FakeBus()
+    ctrl = make_ctrl(clock=clock, cli=cli, bus=bus)
+    ctrl.run()
+    cmds = cli.cmds
+    brief_at = cmds.index("show interfaces brief")
+    assert cmds.index("configure terminal") < brief_at
+    assert cmds.index("interface ethernet 1") < brief_at
+    assert cmds.index("interface ethernet 14") < brief_at
+    assert cmds.index("enable") < brief_at
+    assert cmds.index("end") < brief_at
+    assert cmds.count("enable") == 14        # uma por porta do template
+    assert "interface ethernet 15" not in cmds   # 15/16 vão pelo template
+
+
+def test_burnin_ativa_portas_declaradas_no_template(monkeypatch, tmp_path):
+    """A ativação usa as portas DECLARADAS no template (não um range
+    fixo): template com 2/3 ativa só 2 e 3."""
+    monkeypatch.setattr(os.path, "exists", lambda p: True)
+    tpl = tmp_path / "lsn.conf"
+    tpl.write_text("interface ethernet 2\ninterface ethernet 3\nend\n")
+    clock = FakeClock()
+    cli = StubCli()
+    bus = FakeBus()
+    ctrl = make_ctrl(clock=clock, cli=cli, bus=bus, lsn_config=str(tpl))
+    res = ctrl.run()
+    assert res["verdict"] == "pass"
+    assert "interface ethernet 2" in cli.cmds
+    assert "interface ethernet 3" in cli.cmds
+    assert "interface ethernet 1" not in cli.cmds
+
+
+class DeadCli(StubCli):
+    """Sessão que caiu de vez: nem o relogin volta (getty morto)."""
+
+    def __init__(self):
+        super().__init__()
+        self.login_calls = 0
+
+    def cmd(self, command, timeout=30):
+        raise Exception("timeout aguardando prompt; recebido: 'Password:'")
+
+    def open_and_login(self, login_timeout=20, baud_autodetect=True):
+        self.login_calls += 1
+        raise Exception("relogin falhou")
+
+
+def test_burnin_sessao_morta_vira_aborted(monkeypatch):
+    """Queda de sessão que nem o relogin recupera NUNCA escapa do
+    controller (nada de 'Falha irrecuperável / RELIGUE' no worker) —
+    vira `aborted` com a caixa conectada para inspeção."""
+    monkeypatch.setattr(os.path, "exists", lambda p: True)
+    clock = FakeClock()
+    cli = DeadCli()
+    bus = FakeBus()
+    erased = []
+    ctrl = make_ctrl(clock=clock, cli=cli, bus=bus,
+                     do_erase=lambda: erased.append("erase") or cli)
+    res = ctrl.run()
+    assert res["verdict"] == "aborted"
+    assert "falha no setup" in res["reason"]
+    assert cli.login_calls >= 1
+    assert erased == ["erase"]
+
+
+class DoubleDropCli(StubCli):
+    """Sessão que cai DUAS vezes seguidas (getty reiniciando logo após
+    o reset) e volta após o segundo open_and_login."""
+
+    def __init__(self):
+        super().__init__()
+        self.login_calls = 0
+        self.dead_calls = 0
+
+    def cmd(self, command, timeout=30):
+        if self.dead_calls < 2:
+            self.dead_calls += 1
+            raise Exception("console caiu")
+        return super().cmd(command, timeout=timeout)
+
+    def open_and_login(self, login_timeout=20, baud_autodetect=True):
+        self.login_calls += 1
+        self.cmds.append("open_and_login")
+        return True
+
+
+def test_burnin_reloga_duas_vezes_quando_sessao_cai(monkeypatch):
+    """Queda DUPLA no setup (getty reiniciando): as 3 tentativas do
+    `_cmd` com 2 relogins seguram o burn-in."""
+    monkeypatch.setattr(os.path, "exists", lambda p: True)
+    clock = FakeClock()
+    cli = DoubleDropCli()
+    bus = FakeBus()
+    ctrl = make_ctrl(clock=clock, cli=cli, bus=bus)
+    res = ctrl.run()
+    assert res["verdict"] == "pass"
+    assert cli.login_calls == 2
+    assert "write memory" in cli.written
+
+
 def test_config_line_failed_permission_denied():
     """Config disparada no nível de usuário ('ACOS>') responde
     'Permission denied' — não pode ser aceita em silêncio."""

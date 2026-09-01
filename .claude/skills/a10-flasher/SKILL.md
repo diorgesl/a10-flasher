@@ -78,6 +78,15 @@ acompanhamento e registro dos equipamentos.
    `pause`/`resume` NÃO se aplicam durante o burn-in (consumidos sem
    efeito). TRex é infra: erro dele NUNCA vira `fail` da caixa (aborta
    por infra após 5 min de backoff).
+   CAIXA RECÉM-RESETADA: interfaces vêm DESATIVADAS e o brief não
+   mostra portas utilizáveis — o setup ATIVA as portas declaradas no
+   template (`_template_ports`, fallback 1..14; `configure terminal` +
+   `interface ethernet N`/`enable` + `end`, tolerante a porta rejeitada)
+   ANTES do `show interfaces brief`. `_cmd` tenta 3x com 2 relogins
+   (getty pode reiniciar mais de uma vez pós-reset). Qualquer falha de
+   sessão que nem o relogin recupera vira `aborted` ("falha no setup do
+   burn-in") DENTRO do controller — nunca escapa para o worker
+   ("Falha irrecuperável: RELIGUE O EQUIPAMENTO NA TOMADA").
 
 ## Login serial — pitfalls críticos (todos descobertos em hardware real)
 
