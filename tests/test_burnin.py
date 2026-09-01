@@ -43,6 +43,67 @@ def test_pick_lsn_ports_skip_map_customizado():
     assert pick_lsn_ports("TH930S", _brief(9), custom) == ("8", "9")
 
 
+def _brief_bare(count):
+    """Formato real de algumas versões do ACOS: coluna Port só com o
+    número (sem 'ethernet'); a linha do mgmt e o resumo no fim não
+    podem poluir a contagem."""
+    lines = [
+        "Port    Link  Dupl  Speed  Trunk Vlan MAC             IP Address          IPs  Name",
+        "------------------------------------------------------------------------------------",
+        "mgmt    Up    Full  1000   N/A   N/A  001f.a014.1762  172.31.31.31/24       1",
+    ]
+    for i in range(1, count + 1):
+        lines.append(f"{i:<8} Down  None  None   none  1    "
+                     f"001f.a014.1761  0.0.0.0/0             0")
+    lines += ["", "Global Throughput:0 bits/sec (0 bytes/sec)",
+              "Throughput:0 bits/sec (0 bytes/sec)"]
+    return "\r\n".join(lines)
+
+
+def test_pick_lsn_ports_brief_sem_prefixo_ethernet():
+    """Formato real da bancada: coluna Port só com números — mgmt e
+    'Global Throughput' não contam."""
+    assert pick_lsn_ports("TH930S", _brief_bare(12)) == ("11", "12")
+
+
+def test_pick_lsn_ports_brief_numerico_com_skip_map():
+    assert pick_lsn_ports("TH4430S", _brief_bare(12)) == ("7", "8")
+
+
+def test_pick_lsn_ports_brief_numerico_portas_insuficientes():
+    with pytest.raises(ValueError, match="portas insuficientes"):
+        pick_lsn_ports("TH4430S", _brief_bare(4))
+
+
+def test_pick_lsn_ports_brief_exemplo_real_da_bancada():
+    """Cópia literal do `show int brief` de uma caixa da bancada
+    (12 portas, 11/12 Up a 10G) — parseia mesmo com o eco 'ACOS#'
+    no começo."""
+    brief = (
+        "ACOS#show int brief\r\n"
+        "Port    Link  Dupl  Speed  Trunk Vlan MAC             IP Address          IPs  Name\r\n"
+        "------------------------------------------------------------------------------------\r\n"
+        "mgmt    Up    Full  1000   N/A   N/A  001f.a014.1762  172.31.31.31/24       1\r\n"
+        "1       Down  None  None   none  1    001f.a014.1761  0.0.0.0/0             0\r\n"
+        "2       Down  None  None   none  1    001f.a014.1760  0.0.0.0/0             0\r\n"
+        "3       Down  None  None   none  1    001f.a014.175f  0.0.0.0/0             0\r\n"
+        "4       Down  None  None   none  1    001f.a014.175e  0.0.0.0/0             0\r\n"
+        "5       Down  None  None   none  1    001f.a014.175d  0.0.0.0/0             0\r\n"
+        "6       Down  None  None   none  1    001f.a014.175c  0.0.0.0/0             0\r\n"
+        "7       Down  None  None   none  1    001f.a014.175b  0.0.0.0/0             0\r\n"
+        "8       Down  None  None   none  1    001f.a014.175a  0.0.0.0/0             0\r\n"
+        "9       Down  None  None   none  1    001f.a014.1759  0.0.0.0/0             0\r\n"
+        "10      Down  None  None   none  1    001f.a014.1758  0.0.0.0/0             0\r\n"
+        "11      Up    Full  10000  none  1    001f.a014.1757  0.0.0.0/0             0\r\n"
+        "12      Up    Full  10000  none  1    001f.a014.1756  0.0.0.0/0             0\r\n"
+        "\r\n"
+        "Global Throughput:0 bits/sec (0 bytes/sec)\r\n"
+        "Throughput:0 bits/sec (0 bytes/sec)\r\n"
+        "ACOS#\r\n"
+    )
+    assert pick_lsn_ports("TH930S", brief) == ("11", "12")
+
+
 def test_pick_lsn_ports_sem_portas():
     with pytest.raises(ValueError, match="sem portas ethernet"):
         pick_lsn_ports("TH930S", "nada aqui")

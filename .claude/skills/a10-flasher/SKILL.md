@@ -70,8 +70,10 @@ acompanhamento e registro dos equipamentos.
    REGRA DE PORTAS: modelo (`show version`) define quantas portas
    traseiras de 40G/100G descontar (`trex.trailing_highspeed_ports`,
    default 4 para os modelos "4430+" e 0 para os demais — o brief NÃO
-   distingue velocidade, só conta as portas); inside = penúltima
-   restante, outside = última. Linha de config rejeitada (`%
+   distingue velocidade, só conta as portas). FORMATO DO BRIEF varia
+   entre versões do ACOS: "ethernet N" ou só o número na coluna Port
+   (o parser aceita os dois; linha do `mgmt` e "Global Throughput"
+   não contam); inside = penúltima restante, outside = última. Linha de config rejeitada (`%
    Invalid`/`syntax error` no eco) → burn-in não inicia e o portal
    mostra as linhas. Eventos: `burnin_started`/`burnin_sample`/
    `burnin_result`; DB: tabelas `burnin_runs`/`burnin_samples`.

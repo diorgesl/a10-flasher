@@ -8,9 +8,11 @@ equipamentos de segunda mão.
 Vereditos: pass | fail | interrupted | aborted.
 
 A REGRA DE PORTAS não usa a velocidade do `show interfaces brief`
-(todos os nomes são "ethernet N" e a velocidade não é fonte confiável):
-o modelo (`show version`) diz quantas portas traseiras de 40G/100G
-descontar, e o brief só fornece a contagem.
+(a coluna de velocidade não é fonte confiável): o modelo (`show
+version`) diz quantas portas traseiras de 40G/100G descontar, e o
+brief só fornece a contagem. O formato do brief varia entre versões
+do ACOS — "ethernet N" ou só o número na coluna Port — o parser
+aceita os dois (a linha do `mgmt` não conta).
 """
 
 import re
@@ -26,11 +28,20 @@ def pick_lsn_ports(model, brief, skip_map=None):
     """(inside, outside) = as duas últimas portas ethernet utilizáveis.
 
     `brief` é a saída bruta de `show interfaces brief`; `model` vem do
-    `show version`. `skip_map` = lista de {"pattern", "skip"} (primeiro
-    match vence; default DEFAULT_SKIP_MAP; sem match desconta 0).
+    `show version`. O formato do brief varia entre versões do ACOS:
+    algumas listam "ethernet N", outras só o número na coluna Port —
+    os dois são aceitos (a linha do `mgmt` e os resumos "Global
+    Throughput" não contam). `skip_map` = lista de {"pattern", "skip"}
+    (primeiro match vence; default DEFAULT_SKIP_MAP; sem match
+    desconta 0).
     """
-    ports = {int(m) for m in
-             re.findall(r"ethernet\s+(\d+)", brief or "", re.IGNORECASE)}
+    ports = set()
+    for line in (brief or "").splitlines():
+        m = re.match(r"^\s*ethernet\s+(\d+)\b", line, re.IGNORECASE)
+        if not m:
+            m = re.match(r"^\s*(\d+)\s", line)
+        if m:
+            ports.add(int(m.group(1)))
     if not ports:
         raise ValueError("sem portas ethernet no show interfaces brief")
     skip = 0
