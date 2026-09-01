@@ -552,8 +552,11 @@ class PortalServer:
             return
         cur = rec["devices"].setdefault(key, {"device": key})
         # eventos de status/stage/log atualizam o retrato do dispositivo
-        for field in ("state", "stage", "version", "attempts", "message",
-                      "port", "level", "detail", "event", "ok"):
+        # (serial/model/mgmt_ip: identidade coletada pelo worker no ciclo —
+        # sem eles o card não mostra quem é quem na bancada)
+        for field in ("state", "stage", "version", "serial", "model",
+                      "mgmt_ip", "attempts", "message", "port", "level",
+                      "detail", "event", "ok"):
             if field in msg:
                 cur[field] = msg[field]
         if msg.get("type") == "device" and msg.get("event") == "removed":

@@ -670,3 +670,36 @@ def test_agent_burnin_stop_vira_broadcast():
     agent._handle_cmd({"type": "cmd", "device": "dev-a",
                        "command": "abort", "reason": "teste"})
     assert ("cmd", "dev-a", "abort", "teste", {}) in mon.calls
+
+
+def test_status_ws_preserva_identidade_no_card():
+    """Status periódico (burn-in etc.) não pode zerar o card do ciclo.
+
+    O _track do portal repassa ao retrato do dispositivo apenas uma lista
+    fixa de campos — serial/model/mgmt_ip precisam estar nela, senão o
+    burn-in (status a cada ~60s) apagava modelo/serial/IP de gerência
+    do card do dashboard.
+    """
+    portal = make_portal()
+    client = TestClient(portal.app)
+    with client.websocket_connect("/agent?token=segredo&agent=lab-1") as ws:
+        ws.send_json({"type": "hello", "agent": "lab-1"})
+        assert ws.receive_json()["type"] == "welcome"
+        ws.send_json({
+            "type": "status",
+            "device": "ttyUSB1",
+            "port": "/dev/ttyUSB1",
+            "state": "running",
+            "stage": "burnin",
+            "serial": "TH30B23316450072",
+            "model": "TH4430S",
+            "mgmt_ip": "10.0.0.77",
+        })
+        time.sleep(0.3)
+
+    r = client.get("/api/status", headers={"X-Token": "segredo"})
+    assert r.status_code == 200
+    card = r.json()["agents"]["lab-1"]["devices"]["ttyUSB1"]
+    assert card["serial"] == "TH30B23316450072"
+    assert card["model"] == "TH4430S"
+    assert card["mgmt_ip"] == "10.0.0.77"
