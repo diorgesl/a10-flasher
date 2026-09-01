@@ -15,6 +15,7 @@ DeviceStore) e a config da seção `llm` do config.yaml
 
 import json
 import re
+import time
 import urllib.request
 
 from fpdf import FPDF
@@ -26,17 +27,27 @@ DEFAULT_TIMEOUT = 120
 _SYSTEM_PROMPT = (
     "Você é um especialista em infraestrutura de rede e equipamentos "
     "A10 Thunder (ACOS). Analise os dados do equipamento abaixo e produza "
-    "um relatório técnico em português do Brasil.\n"
+    "um relatório técnico de APROVAÇÃO OPERACIONAL em português do "
+    "Brasil: o objetivo é comprovar que o equipamento está operacional e "
+    "aprovado para entrar em operação, não apenas relatar a saúde.\n"
     "Responda APENAS com um objeto JSON válido, sem texto fora dele, com "
-    "exatamente estas chaves (todas strings):\n"
+    "estas chaves (todas strings, exceto 'aprovado' que é booleano):\n"
     '- "titulo": título do relatório com o número de série\n'
-    '- "resumo": resumo executivo de 2 a 4 frases\n'
+    '- "resumo": resumo executivo de 2 a 4 frases destacando o resultado '
+    "da operação\n"
     '- "identificacao": modelo, série e identificação do equipamento\n'
     '- "firmware": versão ACOS e situação de atualização\n'
-    '- "licencas": análise das licenças (ativas, datas, observações)\n'
-    '- "hardware": saúde do hardware (fans, fontes, temperatura) com base '
-    "no show environment\n"
-    '- "recomendacoes": recomendações práticas\n'
+    '- "interfaces": estado das interfaces (quais estavam UP, contagem '
+    "UP/total) com base no show interfaces\n"
+    '- "licencas": situação das licenças (ativas, datas, observações)\n'
+    '- "burnin": resultado dos testes de carga TRex: veredito, carga '
+    "aplicada (cps), duração e tráfego medido\n"
+    '- "uptime": maior uptime registrado no modo teste, citando o valor '
+    "exato informado\n"
+    '- "aprovacao": conclusão clara e direta se o equipamento está '
+    "OPERACIONAL e APROVADO para trabalhar (ou não, com o motivo)\n"
+    '- "aprovado": true se o equipamento está operacional e aprovado '
+    "(testes passaram e interfaces estão UP), false caso contrário\n"
     "Se alguma saída não foi coletada, diga isso em vez de inventar dados."
 )
 
@@ -88,6 +99,47 @@ def analyze_with_llm(record, llm_cfg):
     return _parse_analysis(content)
 
 
+_VERDICT_LABELS = {
+    "pass": "aprovada",
+    "fail": "reprovada",
+    "interrupted": "interrompida",
+    "aborted": "abortada",
+}
+
+
+def _fmt_uptime(seconds):
+    """Segundos -> '1d 2h 3m' (mesmo formato do `show version`)."""
+    if seconds is None:
+        return None
+    seconds = max(0, int(seconds))
+    d, rem = divmod(seconds, 86400)
+    h, rem = divmod(rem, 3600)
+    m = rem // 60
+    return f"{d}d {h}h {m}m"
+
+
+def _fmt_ts(epoch):
+    """Epoch (float do SQLite) -> '2026-09-01 10:00' local; None -> '—'."""
+    if not epoch:
+        return "—"
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(epoch))
+
+
+def _fmt_num(value):
+    """Número sem zeros decimais ('24' em vez de '24.0'); None -> '—'."""
+    if value is None:
+        return "—"
+    return f"{value:g}" if isinstance(value, (int, float)) else str(value)
+
+
+def _fmt_bps(value):
+    """bps -> '1.20 Gbps' / '800.0 Mbps' (mesmo padrão do dashboard)."""
+    if value is None:
+        return "—"
+    return (f"{value / 1e9:.2f} Gbps" if value >= 1e9
+            else f"{value / 1e6:.1f} Mbps")
+
+
 def _build_messages(record):
     """Prompt: instruções (system) + dados brutos do equipamento (user)."""
     linhas = ["=== DADOS DO EQUIPAMENTO ==="]
@@ -101,9 +153,30 @@ def _build_messages(record):
                   + ("sim" if record.get("upgraded") else "não"))
     for titulo, campo in (("SHOW VERSION", "version_output"),
                           ("SHOW LICENSE-INFO", "license_info"),
+                          ("SHOW INTERFACES BRIEF", "interfaces"),
                           ("SHOW ENVIRONMENT", "environment")):
         linhas.append(f"=== {titulo} ===\n"
                       + (record.get(campo) or "(saída não coletada)"))
+    linhas.append("=== TESTES DE CARGA (TRex) ===")
+    runs = record.get("burnin_runs") or []
+    if runs:
+        for i, run in enumerate(runs, 1):
+            veredito = _VERDICT_LABELS.get(run.get("verdict"),
+                                           run.get("verdict") or "em andamento")
+            trafego = run.get("traffic") or {}
+            linhas.append(
+                f"Run {i}: início {_fmt_ts(run.get('started_ts'))}, "
+                f"duração {_fmt_num(run.get('duration_h'))}h, "
+                f"carga {_fmt_num(run.get('cps'))} cps, "
+                f"veredito {veredito}, motivo: {run.get('reason') or '—'}, "
+                f"pico TX {_fmt_bps(trafego.get('tx_bps'))}, "
+                f"pico RX {_fmt_bps(trafego.get('rx_bps'))}, "
+                f"pico de sessões {_fmt_num(trafego.get('active_sessions'))}, "
+                f"erros {_fmt_num(trafego.get('errors'))}")
+    else:
+        linhas.append("(nenhum teste de carga TRex registrado)")
+    linhas.append("Maior uptime registrado no modo teste (DB): "
+                  + (_fmt_uptime(record.get("max_uptime_s")) or "—"))
     return [
         {"role": "system", "content": _SYSTEM_PROMPT},
         {"role": "user", "content": "\n".join(linhas)},
@@ -138,9 +211,11 @@ _SECTIONS = (
     ("resumo", "Resumo executivo"),
     ("identificacao", "Identificação"),
     ("firmware", "Firmware"),
+    ("interfaces", "Interfaces"),
     ("licencas", "Licenças"),
-    ("hardware", "Saúde do hardware"),
-    ("recomendacoes", "Recomendações"),
+    ("burnin", "Teste de carga (TRex)"),
+    ("uptime", "Maior uptime registrado"),
+    ("aprovacao", "Aprovação"),
 )
 
 
@@ -151,25 +226,87 @@ def _latin1(text):
         else "?" for c in text)
 
 
+class _RelatorioPDF(FPDF):
+    """PDF do relatório com rodapé (número de página)."""
+
+    def footer(self):
+        self.set_y(-15)
+        self.set_font("helvetica", "", 8)
+        self.set_text_color(120, 120, 120)
+        self.cell(0, 10, f"Página {self.page_no()}", align="C")
+
+
+_AZUL = (16, 42, 90)
+_VERDE = (20, 110, 60)
+_VERMELHO = (200, 60, 50)
+
+
 def build_pdf(analysis):
-    """Gera o PDF do relatório em memória e devolve os bytes."""
+    """Gera o PDF do relatório em memória e devolve os bytes.
+
+    Layout: faixa de cabeçalho com o título, selo de aprovação
+    (verde/vermelho conforme o campo booleano `aprovado`), seções com
+    cabeçalho colorido e rodapé com número de página.
+    """
     analysis = analysis or {}
-    pdf = FPDF()
+    pdf = _RelatorioPDF(format="A4")
+    pdf.set_auto_page_break(True, margin=18)
     pdf.add_page()
     # new_x/new_y: multi_cell(0, ...) deixa o cursor na margem direita —
     # sem voltar para a margem esquerda a próxima célula explode com
     # "Not enough horizontal space".
     cell = dict(new_x="LMARGIN", new_y="NEXT")
-    pdf.set_font("helvetica", "B", 16)
+    # faixa de cabeçalho: título em branco + data de geração
+    pdf.set_fill_color(*_AZUL)
+    pdf.rect(0, 0, pdf.w, 34, "F")
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_xy(pdf.l_margin, 7)
+    pdf.set_font("helvetica", "B", 15)
     pdf.multi_cell(0, 8, _latin1(analysis.get("titulo")
                                  or "Relatório do equipamento"), **cell)
-    pdf.ln(4)
+    pdf.set_xy(pdf.l_margin, 26)
+    pdf.set_font("helvetica", "", 9)
+    pdf.multi_cell(0, 5, _latin1(
+        "Relatório de aprovação operacional — gerado em "
+        + time.strftime("%Y-%m-%d %H:%M")), **cell)
+    pdf.set_y(38)
+    # selo de aprovação (verde/vermelho conforme o LLM decidiu)
+    aprovado = analysis.get("aprovado") is True
+    selo = "APROVADO PARA OPERAÇÃO" if aprovado else "NÃO APROVADO"
+    pdf.set_font("helvetica", "B", 13)
+    largura = pdf.get_string_width(selo) + 14
+    pdf.set_fill_color(*(_VERDE if aprovado else _VERMELHO))
+    pdf.rect(pdf.l_margin, pdf.get_y(), largura, 10,
+             style="F", round_corners=True, corner_radius=2)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_xy(pdf.l_margin, pdf.get_y())
+    pdf.cell(largura, 10, selo, align="C")
+    pdf.set_y(pdf.get_y() + 13)
+    pdf.set_text_color(40, 40, 40)
     for chave, rotulo in _SECTIONS:
-        pdf.set_font("helvetica", "B", 11)
-        pdf.multi_cell(0, 6, rotulo, **cell)
+        conteudo = analysis.get(chave)
+        if not conteudo:
+            continue  # seção sem conteúdo não ocupa espaço
+        # cabeçalho da seção: chip de fundo claro + texto em azul
+        pdf.set_font("helvetica", "B", 12)
+        largura = pdf.get_string_width(rotulo) + 8
+        y = pdf.get_y()
+        pdf.set_fill_color(226, 233, 245)
+        pdf.rect(pdf.l_margin, y, largura, 7,
+                 style="F", round_corners=True, corner_radius=1.5)
+        pdf.set_text_color(*_AZUL)
+        pdf.set_xy(pdf.l_margin + 4, y)
+        pdf.cell(largura - 8, 7, rotulo)
+        pdf.set_y(y + 8)
+        # fio fino abaixo do cabeçalho separa a seção da anterior
+        pdf.set_draw_color(200, 205, 215)
+        pdf.line(pdf.l_margin, pdf.get_y(),
+                 pdf.w - pdf.r_margin, pdf.get_y())
+        pdf.set_y(pdf.get_y() + 1.5)
         pdf.set_font("helvetica", "", 10)
-        pdf.multi_cell(0, 5, _latin1(analysis.get(chave) or "—"), **cell)
-        pdf.ln(3)
+        pdf.set_text_color(40, 40, 40)
+        pdf.multi_cell(0, 5, _latin1(conteudo), **cell)
+        pdf.ln(4)
     return bytes(pdf.output())
 
 

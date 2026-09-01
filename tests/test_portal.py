@@ -356,14 +356,39 @@ def test_report_endpoint_gera_pdf():
     analise = {
         "titulo": "Relatório do equipamento A10TH-REP",
         "resumo": "ok", "identificacao": "x", "firmware": "y",
-        "licencas": "z", "hardware": "w", "recomendacoes": "r",
+        "licencas": "z", "interfaces": "w", "burnin": "b",
+        "uptime": "u", "aprovacao": "a", "aprovado": True,
     }
+    # histórico do DB que o relatório deve carregar: maior uptime do modo
+    # teste + runs de burn-in com o agregado de tráfego de cada um
+    portal.store.add_uptime_sample("A10TH-REP", 90061, ts=100.0)
+    portal.store.add_uptime_sample("A10TH-REP", 3600, ts=200.0)
+    portal.store.start_burnin_run("run-rep", "A10TH-REP", "TH5430S",
+                                  1000, 24.0, 100.0)
+    portal.store.add_burnin_sample("run-rep", "A10TH-REP", 101.0,
+                                   1200000000, 800000000, 1000, 900,
+                                   50000, 0, 3600)
+    portal.store.finish_burnin_run("run-rep", 200.0, "pass",
+                                   "24h sem reiniciar", "[]", "ok")
+    capturado = {}
+
+    def fake_analyze(rec, cfg):
+        capturado["rec"] = rec
+        return analise
+
     old = portal_mod.analyze_with_llm
-    portal_mod.analyze_with_llm = lambda rec, cfg: analise
+    portal_mod.analyze_with_llm = fake_analyze
     try:
         r = client.get("/api/devices/A10TH-REP/report", headers=headers)
     finally:
         portal_mod.analyze_with_llm = old
+
+    # o LLM recebeu o maior uptime do DB e os runs com carga total
+    assert capturado["rec"]["max_uptime_s"] == 90061
+    runs = capturado["rec"]["burnin_runs"]
+    assert len(runs) == 1 and runs[0]["verdict"] == "pass"
+    assert runs[0]["traffic"]["tx_bps"] == 1200000000
+    assert runs[0]["traffic"]["errors"] == 0
 
     assert r.status_code == 200, r.text
     assert r.headers["content-type"].startswith("application/pdf")

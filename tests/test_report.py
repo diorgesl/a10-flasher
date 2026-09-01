@@ -30,17 +30,21 @@ def _record():
         "license_info": "License Type: STANDARD\nRenewal date: 2027-01-01",
         "environment": "Fan 1: OK\nPSU 1: OK\nTemp: 38C",
         "version_output": "ACOS version 5.2.1-P14",
+        "interfaces": "Port  Status\n1/1   UP\n1/2   UP",
     }
 
 
 ANALISE = {
     "titulo": "Relatório do equipamento A10TH-ABC123",
-    "resumo": "Equipamento em bom estado geral.",
+    "resumo": "Equipamento operacional, testes concluídos com sucesso.",
     "identificacao": "TH5430S, serial A10TH-ABC123.",
     "firmware": "ACOS 5.2.1-P14, atualizado no ciclo.",
+    "interfaces": "Todas as interfaces UP (2/2).",
     "licencas": "License Type: STANDARD ativa, renovação 2027.",
-    "hardware": "Fan 1: OK, fonte OK, temperatura 38°C.",
-    "recomendacoes": "Manter o monitoramento de rotina.",
+    "burnin": "Teste de carga TRex aprovado: 24h a 1000 cps, pico de 1.20 Gbps.",
+    "uptime": "1d 1h 1m",
+    "aprovacao": "Equipamento OPERACIONAL e APROVADO para operação.",
+    "aprovado": True,
 }
 
 
@@ -100,14 +104,29 @@ def _pdf_texto(pdf_bytes):
 
 
 def test_build_pdf_gera_pdf_valido_com_secoes_e_acentos():
-    """build_pdf devolve bytes de PDF com as seções da análise (pt-BR)."""
+    """build_pdf devolve bytes de PDF com as seções e o selo (pt-BR)."""
     pdf = report.build_pdf(ANALISE)
     assert pdf[:5] == b"%PDF-"
     assert len(pdf) > 500
     texto = _pdf_texto(pdf)
     assert "Relatório do equipamento A10TH-ABC123" in texto
-    assert "temperatura 38" in texto
-    assert "recomenda" in texto.lower()
+    assert "1.20 Gbps" in texto
+    assert "1d 1h 1m" in texto
+    # seções novas do relatório de aprovação operacional
+    # (parênteses escapados \( \) no stream do PDF — sem eles na busca)
+    for rotulo in ("Interfaces", "Teste de carga",
+                   "Maior uptime registrado", "Aprovação"):
+        assert rotulo in texto
+    # selo de aprovação (verde) quando o LLM aprovou
+    assert "APROVADO PARA OPERAÇÃO" in texto
+
+
+def test_build_pdf_selo_nao_aprovado_quando_aprovado_false():
+    """'aprovado': false -> selo vermelho NÃO APROVADO no PDF."""
+    analise = {**ANALISE, "aprovado": False,
+               "aprovacao": "NÃO APROVADO: teste de carga falhou."}
+    texto = _pdf_texto(report.build_pdf(analise))
+    assert "NÃO APROVADO" in texto
 
 
 def test_build_pdf_substitui_caracteres_fora_do_latin1():
@@ -119,6 +138,46 @@ def test_build_pdf_substitui_caracteres_fora_do_latin1():
 
 
 # ------------------------------------------------------- prompt/LLM
+def test_build_messages_inclui_interfaces_burnin_e_max_uptime():
+    """Prompt traz o show interfaces, os runs de TRex (com carga) e o
+    maior uptime do DB, formatados para o LLM."""
+    rec = _record()
+    rec["max_uptime_s"] = 90061
+    rec["burnin_runs"] = [
+        {"run_id": "r1", "started_ts": 1754000000.0, "duration_h": 24.0,
+         "cps": 1000, "verdict": "pass", "reason": "24h sem reiniciar",
+         "traffic": {"tx_bps": 1200000000, "rx_bps": 800000000,
+                     "active_sessions": 50000, "errors": 0}},
+        {"run_id": "r2", "started_ts": 1755000000.0, "duration_h": 24.0,
+         "cps": 1000, "verdict": "fail", "reason": "reiniciou sob carga",
+         "traffic": None},
+    ]
+    user = report._build_messages(rec)[-1]["content"]
+    assert "SHOW INTERFACES BRIEF" in user
+    assert "1/1   UP" in user
+    assert "TESTES DE CARGA (TRex)" in user
+    assert "aprovada" in user and "reprovada" in user
+    assert "1000 cps" in user
+    assert "1.20 Gbps" in user and "800.0 Mbps" in user
+    assert "50000" in user and "erros 0" in user
+    assert "Maior uptime registrado no modo teste (DB): 1d 1h 1m" in user
+
+
+def test_build_messages_sem_burnin_avisa_ausencia():
+    """Sem runs registrados o prompt diz que não há teste, sem quebrar."""
+    rec = _record()
+    user = report._build_messages(rec)[-1]["content"]
+    assert "nenhum teste de carga TRex registrado" in user
+    assert "Maior uptime registrado no modo teste (DB): —" in user
+
+
+def test_fmt_uptime_formato_acos():
+    """Segundos -> '1d 1h 1m' (mesmo formato do `show version`)."""
+    assert report._fmt_uptime(90061) == "1d 1h 1m"
+    assert report._fmt_uptime(0) == "0d 0h 0m"
+    assert report._fmt_uptime(None) is None
+
+
 def test_analyze_with_llm_envia_payload_correto_e_parseia_json():
     """Monta o prompt com os dados brutos, chama o DeepSeek e devolve a análise."""
     captured = {}

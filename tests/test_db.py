@@ -101,6 +101,34 @@ def test_uptime_samples():
     assert store.list_uptime("OUTRA") == []
 
 
+def test_max_uptime():
+    """Maior uptime registrado no modo teste (base do relatório PDF)."""
+    store = make_store()
+    assert store.max_uptime("A10TH-MAX") is None
+    store.add_uptime_sample("A10TH-MAX", 7380, ts=100.0)
+    store.add_uptime_sample("A10TH-MAX", 90061, ts=200.0)
+    store.add_uptime_sample("A10TH-MAX", 3600, ts=300.0)
+    assert store.max_uptime("A10TH-MAX") == 90061
+    assert store.max_uptime("OUTRA") is None
+
+
+def test_burnin_traffic_stats():
+    """Agregado de tráfego de um run (pico TX/RX, sessões, erros)."""
+    store = make_store()
+    store.start_burnin_run("run-1", "SER-1", "dev-a", 1000, 24, 100.0)
+    assert store.burnin_traffic_stats("run-1") is None  # sem amostras
+    store.add_burnin_sample("run-1", "SER-1", 101.0, 1000, 900, 50, 45,
+                            10, 2, 3600)
+    store.add_burnin_sample("run-1", "SER-1", 102.0, 1100, 950, 55, 48,
+                            12, 1, 3660)
+    stats = store.burnin_traffic_stats("run-1")
+    assert stats["tx_bps"] == 1100
+    assert stats["rx_bps"] == 950
+    assert stats["active_sessions"] == 12
+    assert stats["errors"] == 3
+    assert store.burnin_traffic_stats("run-inexistente") is None
+
+
 def test_burnin_run_lifecycle():
     store = DeviceStore(":memory:")
     store.start_burnin_run("run-1", "SER-1", "dev-a", 1000, 24, 100.0)

@@ -202,6 +202,14 @@ class DeviceStore:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def max_uptime(self, serial):
+        """Maior uptime registrado no modo teste (segundos) ou None."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT MAX(uptime_s) AS max_up FROM uptime_samples "
+                "WHERE serial = ?", ((serial or "").strip(),)).fetchone()
+        return row["max_up"] if row and row["max_up"] is not None else None
+
     # ------------------------------------------------------------ burn-in
     def start_burnin_run(self, run_id, serial, device, cps, duration_h,
                          started_ts):
@@ -273,6 +281,22 @@ class DeviceStore:
                 "WHERE run_id = ? ORDER BY ts ASC LIMIT ?",
                 (run_id, limit)).fetchall()
         return [dict(r) for r in rows]
+
+    def burnin_traffic_stats(self, run_id):
+        """Agregado de tráfego de um run (pico TX/RX, sessões e erros).
+
+        Alimenta a "carga total" do relatório PDF. None se o run não
+        tiver amostras.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT MAX(tx_bps) AS tx_bps, MAX(rx_bps) AS rx_bps, "
+                "MAX(active_sessions) AS active_sessions, "
+                "COALESCE(SUM(errors), 0) AS errors "
+                "FROM burnin_samples WHERE run_id = ?", (run_id,)).fetchone()
+        if row is None or row["tx_bps"] is None:
+            return None
+        return dict(row)
 
     def active_burnin(self, serial):
         """Run em andamento de um equipamento (ended_ts NULL) ou None."""
