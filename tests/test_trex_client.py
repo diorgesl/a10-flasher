@@ -232,3 +232,84 @@ def test_stop_all_stops_ours_only():
     assert "stop" in fake.calls
     assert "disconnect" in fake.calls
     assert popen.terminated == []            # daemon não era nosso
+
+
+# ------------------------------------------------ compat PEP 594 (py3.13)
+
+def test_pep594_shims_instala_stubs_e_idempotente(monkeypatch):
+    monkeypatch.delitem(sys.modules, "cgi", raising=False)
+    monkeypatch.delitem(sys.modules, "cgitb", raising=False)
+    monkeypatch.delitem(sys.modules, "imp", raising=False)
+    monkeypatch.delitem(sys.modules, "distutils", raising=False)
+    monkeypatch.delitem(sys.modules, "distutils.version", raising=False)
+    tc._pep594_compat_shims()
+    if sys.version_info >= (3, 13):          # stub instalado de verdade
+        cgi = sys.modules["cgi"]
+        assert cgi.escape("a<b>&") == "a&lt;b&gt;&amp;"
+        assert cgi.parse_qs("x=1&y=2") == {"x": ["1"], "y": ["2"]}
+        assert cgi.parse_header("text/html; charset=utf-8") == \
+            ("text/html", {"charset": "utf-8"})
+        assert sys.modules["cgitb"].enable() is None
+    if sys.version_info >= (3, 12):          # imp/distutils removidos
+        assert sys.modules["imp"].new_module("x").__name__ == "x"
+        assert sys.modules["distutils"].version.LooseVersion("1.0") \
+            == sys.modules["distutils"].version.LooseVersion("1.0")
+    tc._pep594_compat_shims()                # idempotente: não duplica
+
+
+def test_loose_version_stub_compara_como_distutils():
+    L = tc._LooseVersion
+    assert L("1.2.3") < L("1.2.10")          # numérico, não lexicográfico
+    assert L("5.2.1-P14.73") > L("5.2.1-P5.114")
+    assert L("1.0a1") < L("1.0b1")           # a < b
+    # quirk do distutils original: pré-release é MAIOR que a versão final
+    # (componente alfanumérico vs componente ausente) — o stub replica.
+    assert L("1.0b1") > L("1.0")
+    assert L("1.0") == L("1.0")
+    assert L("2.0") >= L("1.9")
+    assert not (L("1.0") != L("1.0"))
+
+
+def test_connect_sem_dir_instalado_avisa_confira_trex_path():
+    c = TRexClient("/nao/existe/trex")
+    with pytest.raises(TRexError) as ei:
+        c._connect()
+    msg = str(ei.value)
+    assert "lib Python do TRex não encontrada" in msg
+    assert "confira trex.path" in msg
+
+
+def test_connect_import_falho_avisa_dependencias(monkeypatch):
+    monkeypatch.setattr(tc.os.path, "isdir", lambda p: True)
+    old_path = sys.path[:]
+    try:
+        c = TRexClient("/opt/trex/v3.08")
+        with pytest.raises(TRexError) as ei:
+            c._connect()
+        msg = str(ei.value)
+        assert "import da lib TRex falhou" in msg
+        assert "scapy" in msg and "dpkt" in msg
+        assert "legacy-cgi" not in msg        # módulo falho é 'trex', não cgi
+    finally:
+        sys.path[:] = old_path
+
+
+def test_connect_import_falho_cgi_cita_legacy_cgi(monkeypatch):
+    monkeypatch.setattr(tc.os.path, "isdir", lambda p: True)
+    real_import = __import__
+
+    def fake_import(name, *a, **k):
+        if name == "trex" or name.startswith("trex."):
+            raise ImportError("No module named 'cgi'", name="cgi")
+        return real_import(name, *a, **k)
+
+    monkeypatch.setattr("builtins.__import__", fake_import)
+    old_path = sys.path[:]
+    try:
+        c = TRexClient("/opt/trex/v3.08")
+        with pytest.raises(TRexError) as ei:
+            c._connect()
+        assert "No module named 'cgi'" in str(ei.value)
+        assert "legacy-cgi" in str(ei.value)
+    finally:
+        sys.path[:] = old_path

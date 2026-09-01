@@ -80,6 +80,15 @@ acompanhamento e registro dos equipamentos.
    `pause`/`resume` NÃO se aplicam durante o burn-in (consumidos sem
    efeito). TRex é infra: erro dele NUNCA vira `fail` da caixa (aborta
    por infra após 5 min de backoff).
+   **Python 3.13 + TRex (`No module named 'cgi'`)**: a cadeia de import
+   da lib exige scapy/pyyaml/dpkt/texttable/repoze.lru no venv do
+   agente, e o scapy 2.4.x ainda faz `import cgi` — módulo removido no
+   Python 3.13 (PEP 594). `_connect()` roda `_pep594_compat_shims()`
+   antes do import (prefere o pacote oficial `legacy-cgi` quando
+   instalado; senão stubs de `cgi`/`cgitb`/`imp`/`distutils` em
+   sys.modules) e a mensagem de erro distingue "não encontrada"
+   (trex.path errado) de "import falhou" (lista as dependências a
+   instalar e cita `legacy-cgi` no Python 3.13).
    CAIXA RECÉM-RESETADA: interfaces vêm DESATIVADAS e o brief não
    mostra portas utilizáveis — o setup ATIVA as portas declaradas no
    template (`_template_ports`, fallback 1..14; `configure terminal` +
