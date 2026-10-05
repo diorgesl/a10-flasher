@@ -366,6 +366,27 @@ def test_burnin_unplug_interrupted(monkeypatch):
     assert erased == []
 
 
+def test_burnin_port_present_injetado_decide_desconexao(monkeypatch):
+    """No Digi a porta nunca some do filesystem: quem decide a desconexão
+    é o callable `port_present` do worker (sonda na sessão aberta)."""
+    monkeypatch.setattr(os.path, "exists", lambda p: True)
+    cfg = {"device": {"test_interval_h": 1},
+           "trex": {"path": "/opt/trex/v3.08", "cps": 1000,
+                    "duration_h": 24, "sample_interval_s": 60,
+                    "lsn_config": "trex/config_lsn.conf"}}
+    erased = []
+    ctrl = BurninController(
+        cli=StubCli(), serial="SER-1", device_info={"model": "TH930S"},
+        trex=FakeTRexClient(), cfg=cfg, bus=FakeBus(),
+        notifier=FakeNotifier(), device="digi-p01",
+        port_path="ssh://10.10.1.155:3001",
+        do_erase=lambda: erased.append("erase"),
+        clock=FakeClock(), port_present=lambda: False)
+    res = ctrl.run()
+    assert res["verdict"] == "interrupted"
+    assert erased == []
+
+
 def test_burnin_stop_aborted_com_erase(monkeypatch):
     monkeypatch.setattr(os.path, "exists", lambda p: True)
 

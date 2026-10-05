@@ -18,6 +18,16 @@ class ConsoleError(Exception):
     """Erro de comunicação com o console (timeout, porta, etc)."""
 
 
+class PortUnavailable(ConsoleError):
+    """A porta não pôde ser aberta por motivo que outro baudrate não
+    resolve (ex.: porta do Digi ocupada ou Digi inalcançável)."""
+
+
+class SessionClosed(ConsoleError):
+    """A sessão do console fechou depois de aberta (ex.: canal SSH do
+    Digi caiu por idle timeout, rede ou reboot do Digi)."""
+
+
 class SerialConsole:
     """Abre a porta serial e expõe send/expect no estilo de um terminal."""
 

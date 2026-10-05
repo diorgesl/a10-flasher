@@ -234,6 +234,38 @@ acompanhamento e registro dos equipamentos.
   - `threading.Lock` em todas as operações (handlers rodam em threads
     diferentes); `bool(upgraded)` na leitura (SQLite devolve int).
 
+## Digi Connect IT 16 (`serial.transport: digi`) — fatos medidos no aparelho
+
+- Porta física N = SSH em `base_port + N` (10.10.1.155:3001...). Em
+  2026-10-05 só 3001–3008 abriam TCP; 3009–3016 sem resposta.
+- Auth do SSH: `publickey,keyboard-interactive` (SEM `password` puro) —
+  `Transport.auth_password` do paramiko cai sozinho no k-interactive.
+- Toda conexão recebe banner (`Connecting to portN: ... UART Mode: 9600
+  8N1`) e em seguida o **HISTÓRICO** da porta (~4 KB, SEMPRE, inclusive de
+  caixa já desplugada). `SshConsole` descarta os dois na abertura (até
+  0,5 s de silêncio, teto 3 s): um `ACOS#` velho no fim do buffer faria o
+  `_login` achar que há sessão logada; na sonda, histórico ≠ caixa viva.
+- Acesso exclusivo LIGADO: `PORT already in use` + fecha → `PortBusy`.
+  Sonda e worker NUNCA na mesma porta: o `DigiScanner` não sonda porta
+  com worker vivo; dentro do worker a presença é `cli.ping()` (ENTER) na
+  sessão já aberta (`LinkPresence`, `absent_after` faltas seguidas).
+- Caixa ligada: ENTER → `ACOS login:` (< 1,5 s). Sem caixa: silêncio.
+- Sem DTR/hotplug — o A10 não manda o banner sozinho; o wake por ENTER
+  do `_wake_console` é o que acorda.
+- `PortBusy`/`LinkDown` (subclasses de `PortUnavailable`) = estado
+  DESCONHECIDO: nunca contam como "caixa desconectada" (Digi fora do ar
+  no meio de um burn-in não vira `interrupted`). `SessionClosed` (canal
+  caiu — idle timeout de 15 min do Digi, rede) → reabre a sessão.
+- Fábrica de console do Digi tem `supports_baud = False`: o `SerialA10`
+  não varre baudrates (o `_relogin` do burn-in e o `_collect_uptime`
+  chamam `open_and_login()` com `baud_autodetect=True` por padrão —
+  reabriria o SSH 6x numa caixa muda).
+- `--once ssh://host:porta` usa a chave `digi-pNN` (`_port_key`) — com
+  outra chave o loop do daemon pós-ciclo reciclaria a mesma caixa.
+- Escape `~b` do Digi: nada que o worker envia contém `~b`.
+- Testes: `tests/fake_digi.py` (servidor SSH paramiko em processo que
+  imita banner/histórico/busy/queda).
+
 ## Card do dashboard — identidade e reconexão (pitfalls)
 
 - **`_track` do portal copia só uma WHITELIST de campos** para o retrato

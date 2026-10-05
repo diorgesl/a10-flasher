@@ -23,7 +23,9 @@ from .serial_console import (
     PASSWORD_RE,
     PROMPT_RE,
     ConsoleError,
+    PortUnavailable,
     SerialConsole,
+    SessionClosed,
     confirm_answer,
 )
 from .version import (
@@ -73,8 +75,11 @@ class SerialA10:
     """Wrapper de alto nível: sessão serial logada no ACOS."""
 
     def __init__(self, port, baudrate=115200, username="admin", password="a10",
-                 enable_password=""):
+                 enable_password="", console_factory=None):
         self.port = port
+        # fábrica do console: SerialConsole (USB) ou SshConsole (Digi) —
+        # assinatura factory(port, baudrate=...)
+        self.console_factory = console_factory or SerialConsole
         self.baudrate = baudrate
         self.username = username
         self.password = password
@@ -97,7 +102,10 @@ class SerialA10:
         """
         self.close()
         bauds = [self.baudrate]
-        if baud_autodetect:
+        # console sem baud (Digi: o serial é configurado no aparelho) —
+        # varrer baudrates só reabriria a mesma sessão SSH várias vezes
+        if baud_autodetect and getattr(self.console_factory,
+                                       "supports_baud", True):
             for b in BAUD_DEFAULTS:
                 if b not in bauds:
                     bauds.append(b)
@@ -109,7 +117,8 @@ class SerialA10:
         last = None
         for baud in bauds:
             try:
-                self.console = SerialConsole(self.port, baudrate=baud)
+                self.console = self.console_factory(self.port,
+                                                    baudrate=baud)
                 # 1) espera PASSIVA: com DTR ativo o console envia o banner
                 # "login:" espontaneamente ao detectar o terminal (como no
                 # screen). NÃO drenar nada antes — descartar o banner
@@ -129,6 +138,11 @@ class SerialA10:
                         timeout=detect_timeout)
                 found = baud
                 break
+            except PortUnavailable:
+                # porta do Digi ocupada/inalcançável: outro baudrate não
+                # resolve — o erro real precisa chegar ao operador
+                self.close()
+                raise
             except ConsoleError as exc:
                 last = exc
                 # TRAVA DE BAUDRATE: se o console respondeu QUALQUER coisa
@@ -369,6 +383,23 @@ class SerialA10:
             except ConsoleError:
                 pass  # sessão caiu (reboot) — ok
         return buf
+
+    def ping(self, timeout=4):
+        """ENTER na sessão aberta: True se a caixa respondeu algo visível,
+        False se ficou muda. Consome a resposta inteira — um prompt que
+        sobrasse no buffer casaria no PROMPT_RE do próximo cmd().
+        Sessão caída -> SessionClosed (quem chama decide se reabre)."""
+        con = self._console()
+        con.drain(0.1)
+        con.sendline("")
+        try:
+            con.expect([r"\S"], timeout=timeout)
+        except SessionClosed:
+            raise
+        except ConsoleError:
+            return False
+        con.drain(0.5)
+        return True
 
     def _console(self):
         if self.console is None:

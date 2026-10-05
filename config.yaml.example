@@ -1,10 +1,22 @@
 serial:
+  # usb  = adaptador USB-serial direto no PC (hotplug /dev/ttyUSB*)
+  # digi = servidor serial Digi Connect IT 16 (SSH na porta base_port+N)
+  transport: usb
   baudrate: 9600
   autodetect_baud: true
   wake_enters: 3
   poll_interval: 3
   login_timeout: 20
   ports: []
+  digi:
+    host: 10.10.1.155
+    username: admin
+    password: "troque"
+    base_port: 3000          # porta física N -> SSH em base_port + N
+    ports: [1, 2, 3, 4, 5, 6, 7, 8]   # padrão: 1..16
+    probe_interval: 10       # s entre sondas (ENTER) de cada porta
+    probe_timeout: 4         # s esperando a caixa responder ao ENTER
+    absent_after: 3          # sondas seguidas sem resposta = desconectada
 
 device:
   username: admin

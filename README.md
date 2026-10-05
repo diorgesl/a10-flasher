@@ -126,6 +126,17 @@ portal_agent: # no PC DO LABORATÓRIO
   gerência do equipamento** (mesma VLAN de gerência).
 - `mgmt_ip: auto` lê o IP do equipamento via serial. Se o equipamento estiver sem
   IP (config de fábrica), preencha `mgmt_static` e o script aplica via CLI.
+- **Digi Connect IT 16** (`serial.transport: digi`): em vez do USB, cada porta
+  física N do Digi é acessada por SSH em `base_port + N` (3001, 3002...). Como a
+  porta sempre existe, o monitor **sonda** cada porta livre a cada
+  `probe_interval` s (conecta, descarta o banner e o histórico que o Digi
+  reenvia, manda ENTER): respondeu = caixa conectada, dispara o ciclo. No modo
+  teste/burn-in a mesma sonda roda na sessão do worker; `absent_after` faltas
+  seguidas = caixa desconectada. Porta ocupada por outra sessão (`PORT already
+  in use` — acesso manual) ou Digi fora do ar **nunca** viram "desconectada".
+  Card/log usam a chave `digi-p01`...`digi-p16`. Config recomendada nas portas
+  do Digi: idle timeout 0, history size 0, escape sequence vazia, acesso
+  exclusivo ligado (o código não depende delas).
 - O monitor procura **apenas** `/dev/ttyUSB*` e `/dev/ttyACM*` (os nomes by-id do
   `/dev/serial/by-id` duplicavam a mesma porta com outra chave, gerando dois
   workers na mesma caixa).
@@ -160,6 +171,8 @@ portal_agent: # no PC DO LABORATÓRIO
 # para o comportamento antigo (encerrar após o ciclo, teste):
 .venv/bin/python -m a10flash.monitor_cli --config config.yaml --once /dev/ttyUSB0
 .venv/bin/python -m a10flash.monitor_cli --config config.yaml --once /dev/ttyUSB0 --exit-after-cycle
+# Digi (transport: digi): porta 1
+.venv/bin/python -m a10flash.monitor_cli --config config.yaml --once ssh://10.10.1.155:3001
 ```
 
 ### Rodando como serviço (produção)
@@ -310,6 +323,9 @@ a10flash/
   a10_cli.py       # console serial ACOS (login, show, erase, reboot...)
   a10_axapi.py     # cliente AXAPI (upgrade via SFTP, bootimage, write...)
   serial_console.py# camada serial com expect
+  ssh_console.py   # porta do Digi via SSH (mesma interface) + sonda
+  digi.py          # descoberta de caixas nas portas do Digi
+  presence.py      # presença com histerese (sonda na sessão aberta)
   version.py       # parsing/comparação de versões ACOS
   notify.py        # log + Telegram + eventos no bus
   power.py         # tomada Tasmota / modo manual

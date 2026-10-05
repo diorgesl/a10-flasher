@@ -17,7 +17,9 @@ import time
 from .a10_axapi import A10Axapi, AxapiError
 from .a10_cli import A10Error, SerialA10
 from .burnin import BurninAbort, BurninController
-from .serial_console import ConsoleError
+from .presence import LinkPresence
+from .serial_console import ConsoleError, PortUnavailable
+from .ssh_console import SshConsole
 from .state import ProcessedSerials
 from .trex_client import TRexClient
 from .version import (
@@ -73,6 +75,9 @@ class FlashWorker:
         self._state = "running"
         self._stage = None
         self._processed = None
+        # Digi: sessão viva do modo teste/burn-in (sondada pela presença)
+        self._live_cli = None
+        self._presence = None
         # identidade desta instância (metadata no cache — o skip NÃO
         # consulta o owner: id(self) pode ser reusado por outro worker)
         self._owner = f"{os.getpid()}:{id(self)}"
@@ -89,6 +94,63 @@ class FlashWorker:
         # descartados nas fronteiras de estágio — ficam deferidos até o
         # loop do modo teste drenar
         self._deferred_cmds.extend(self._check_commands())
+
+    # ------------------------------------------------- transporte (USB/Digi)
+    def _is_digi(self):
+        return str(self.port_path).startswith("ssh://")
+
+    def _digi_cfg(self):
+        return self.cfg.get("serial", {}).get("digi", {}) or {}
+
+    def _console_kwargs(self):
+        """Digi: fábrica de SshConsole com as credenciais do config. USB:
+        nada (SerialA10 usa a SerialConsole padrão)."""
+        if not self._is_digi():
+            return {}
+        d = self._digi_cfg()
+        user = d.get("username", "admin")
+        pwd = d.get("password", "")
+
+        def factory(port, baudrate=None):
+            return SshConsole(port, username=user, password=pwd,
+                              baudrate=baudrate)
+
+        factory.supports_baud = False   # baud é configurado no Digi
+        return {"console_factory": factory}
+
+    def _port_present(self):
+        """Caixa ainda ligada? USB: o device existe. Digi: a porta SSH
+        nunca some — ENTER na sessão aberta, com histerese (LinkPresence)."""
+        if not self._is_digi():
+            return os.path.exists(self.port_path)
+        if self._presence is None:
+            d = self._digi_cfg()
+            self._presence = LinkPresence(
+                self._digi_check,
+                interval=float(d.get("probe_interval", 10)),
+                absent_after=int(d.get("absent_after", 3)))
+        return self._presence.present()
+
+    def _digi_check(self):
+        """True = respondeu; False = muda; None = desconhecido (porta
+        ocupada/Digi fora — nunca vira "caixa desconectada")."""
+        cli = self._live_cli
+        if cli is None:
+            return None
+        timeout = float(self._digi_cfg().get("probe_timeout", 4))
+        try:
+            return cli.ping(timeout=timeout)
+        except (ConsoleError, A10Error):
+            pass  # sessão caiu (idle timeout/rede): reabre
+        try:
+            cli.open_and_login()
+            return True
+        except PortUnavailable as exc:
+            self.notifier.warn(
+                self.device, f"Digi: {exc} — presença desconhecida")
+            return None
+        except (ConsoleError, A10Error):
+            return False
 
     def _resolve(self):
         if self.resolve_port:
@@ -507,10 +569,12 @@ class FlashWorker:
                     username=dev_cfg.get("username", "admin"),
                     password=dev_cfg.get("password", "a10"),
                     enable_password=dev_cfg.get("enable_password", ""),
+                    **self._console_kwargs(),
                 )
                 cli.open_and_login(
                     login_timeout=int(ser_cfg.get("login_timeout", 20)),
-                    baud_autodetect=bool(ser_cfg.get("autodetect_baud", True)),
+                    baud_autodetect=(not self._is_digi() and bool(
+                        ser_cfg.get("autodetect_baud", True))),
                     wake_enters=int(ser_cfg.get("wake_enters", 3)),
                 )
                 if cli.baudrate != cfg_baud:
@@ -1207,6 +1271,8 @@ class FlashWorker:
                           .get("test_interval_h", 1)) * 3600)
         samples = 0
         next_at = 0.0   # primeira coleta é imediata
+        self._live_cli = cli
+        self._presence = None   # faltas zeradas a cada entrada no modo
         self._state = "test_mode"
         self._publish_status()
         self.notifier.info(
@@ -1224,7 +1290,7 @@ class FlashWorker:
             for cmd in self._drain_commands():
                 if cmd.get("command") == "burnin_start":
                     return {"samples": samples, "burnin": cmd}
-            if not os.path.exists(self.port_path):
+            if not self._port_present():
                 self.notifier.info(
                     self.device,
                     "Caixa desconectada — encerrando o modo teste.")
@@ -1285,7 +1351,10 @@ class FlashWorker:
             cfg=self.cfg, bus=self.bus, notifier=self.notifier,
             device=self.device, port_path=self.port_path,
             mailbox=self.mailbox, do_erase=do_erase,
-            cps_override=cps_override, duration_override=duration_override)
+            cps_override=cps_override, duration_override=duration_override,
+            port_present=self._port_present)
+        self._live_cli = cli
+        self._presence = None
         # estado "burnin" publicado ANTES do loop: o portal/dashboard
         # mostram o burn-in em andamento (não só 'test_mode')
         self._state = "burnin"

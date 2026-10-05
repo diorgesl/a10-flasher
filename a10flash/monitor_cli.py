@@ -4,6 +4,7 @@
 Uso:
   python -m a10flash.monitor_cli --config config.yaml
   python -m a10flash.monitor_cli --config config.yaml --once /dev/ttyUSB0
+  python -m a10flash.monitor_cli --config config.yaml --once ssh://10.10.1.155:3001
   python -m a10flash.monitor_cli --config config.yaml --portal-url ws://SRV:8080/agent
 
 O portal (servidor) roda separado: python -m a10flash.portal --config config.yaml

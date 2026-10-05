@@ -15,6 +15,7 @@ import os
 import threading
 import time
 
+from .digi import DigiScanner
 from .mailbox import Mailbox
 from .worker import FlashWorker
 
@@ -50,6 +51,10 @@ class PortMonitor:
         self.known = {}                   # key -> rec
         self.statuses = {}                # key -> último status conhecido
         self._stop = threading.Event()
+        ser_cfg = cfg.get("serial", {}) or {}
+        # Digi Connect IT 16: portas via SSH, presença por sonda ativa
+        self.digi = (DigiScanner(ser_cfg.get("digi", {}), notifier=notifier)
+                     if ser_cfg.get("transport") == "digi" else None)
 
     def stop(self):
         self._stop.set()
@@ -58,17 +63,33 @@ class PortMonitor:
     def run(self, once_port=None):
         if once_port:
             return self._run_once(once_port)
-        poll = float(self.cfg.get("serial", {}).get("poll_interval", 3))
+        poll = self._poll_interval()
+        where = ("nas portas do Digi" if self.digi
+                 else "na porta serial")
         self.notifier.info(None, "Monitor iniciado — aguardando equipamentos "
-                                 "na porta serial...")
+                                 f"{where}...")
         while not self._stop.is_set():
             current = self._snapshot()
             self._reconcile(current)
             time.sleep(poll)
         return None
 
+    def _poll_interval(self):
+        if self.digi:
+            return float(self.cfg["serial"]["digi"].get("probe_interval", 10))
+        return float(self.cfg.get("serial", {}).get("poll_interval", 3))
+
+    def _port_key(self, port_path):
+        """Chave estável da porta — a mesma que o _snapshot usa (senão o
+        loop do daemon pós --once vê a porta como caixa nova)."""
+        if self.digi:
+            for key, url in self.digi.ports().items():
+                if url == port_path:
+                    return key
+        return os.path.basename(port_path) or port_path
+
     def _run_once(self, port_path):
-        key = os.path.basename(port_path) or port_path
+        key = self._port_key(port_path)
         self.notifier.info(None, f"Modo único: processando {port_path}")
         rec = self._spawn(key, port_path)
         if rec is None:
@@ -86,7 +107,14 @@ class PortMonitor:
         /dev/serial/by-id duplicavam a MESMA porta física com outra
         chave, gerando dois workers na mesma caixa). Deduplica por
         device real (realpath) por segurança.
+
+        Com `serial.transport: digi`, as portas do Digi com caixa
+        respondendo (sonda ativa); porta com worker vivo não é sondada.
         """
+        if self.digi:
+            held = {k for k, r in self.known.items()
+                    if r["thread"] is not None and r["thread"].is_alive()}
+            return self.digi.snapshot(held=held)
         explicit = self.cfg.get("serial", {}).get("ports") or []
         if explicit:
             return {os.path.basename(p): p for p in explicit

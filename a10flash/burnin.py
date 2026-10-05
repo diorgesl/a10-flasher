@@ -110,7 +110,8 @@ class BurninController:
 
     def __init__(self, cli, serial, device_info, trex, cfg, bus,
                  notifier, device, port_path, mailbox=None, do_erase=None,
-                 cps_override=None, duration_override=None, clock=None):
+                 cps_override=None, duration_override=None, clock=None,
+                 port_present=None):
         self.cli = cli
         self.serial = serial or ""
         self.device_info = device_info or {}
@@ -125,6 +126,10 @@ class BurninController:
         self.cps_override = cps_override
         self.duration_override = duration_override
         self.clock = clock or _time
+        # caixa ainda ligada? USB: o device existe; Digi: o worker injeta
+        # a sonda na sessão aberta (a porta SSH nunca "some")
+        self.port_present = (port_present
+                             or (lambda: os.path.exists(self.port_path)))
 
     # ------------------------------------------------------- utilitários
     def _repo_file(self, rel_path):
@@ -341,7 +346,7 @@ class BurninController:
             # 3) loop de observação
             while True:
                 self._check_burnin_commands()
-                if not os.path.exists(self.port_path):
+                if not self.port_present():
                     verdict, reason = ("interrupted",
                                        "caixa desconectada da serial")
                     break
