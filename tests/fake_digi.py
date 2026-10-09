@@ -56,6 +56,10 @@ class _Iface(paramiko.ServerInterface):
 
     def check_channel_shell_request(self, channel):
         self.shell.set()
+        if self.digi.stall_shell:
+            # Digi "segurando" a porta: aceita SSH/senha mas não responde
+            # ao pedido de shell (o paramiko espera isso sem timeout)
+            self.digi._stop.wait(3600)
         return True
 
 
@@ -63,7 +67,8 @@ class FakeDigi:
     """Uma porta serial do Digi via SSH em 127.0.0.1:<porta aleatória>.
 
     Atributos ajustáveis em tempo de teste: `busy`, `history`,
-    `box_present` (responde ao ENTER), `received` (bytes recebidos).
+    `box_present` (responde ao ENTER), `stall_shell` (nunca responde ao
+    pedido de shell), `received` (bytes recebidos).
     """
 
     def __init__(self, port_num=1, username="admin", password="pw",
@@ -74,6 +79,7 @@ class FakeDigi:
         self.history = history
         self.busy = busy
         self.box_present = box_present
+        self.stall_shell = False
         self.received = b""
         self.connections = 0
         self._chans = []

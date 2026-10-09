@@ -587,6 +587,13 @@ class FlashWorker:
                 return cli
             except (ConsoleError, A10Error, OSError) as exc:
                 last = exc
+                # motivo visível no card/log (antes: retry silencioso por
+                # até 600 s com o card parado) — só quando o motivo muda
+                if str(exc) != getattr(self, "_last_open_err", None):
+                    self._last_open_err = str(exc)
+                    self.notifier.warn(
+                        self.device,
+                        f"console não abriu (tentando de novo): {exc}")
                 time.sleep(3)
         raise FlashError(f"não consegui abrir/login no console serial: {last}")
 
