@@ -139,7 +139,7 @@ notify:
 # Burn-in de estabilidade (24h de tráfego CGNAT/LSN via TRex).
 # Só existe no config do LAB (no servidor é ignorada).
 trex:
-  enabled: true               # burn-in automático pós-ciclo (caixa na versão alvo)
+  enabled: false               # burn-in automático pós-ciclo (caixa na versão alvo)
   path: /opt/trex/v3.08       # instalação do TRex no PC do lab
   lsn_config: trex/config_lsn.conf   # template com {INSIDE_PORT}/{OUTSIDE_PORT}
   cps: 1000                   # ~2 Gbps no teste manual de referência
