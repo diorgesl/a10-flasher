@@ -248,6 +248,31 @@ def test_worker_digi_abre_console_ssh_sem_autodetect(monkeypatch):
     assert opened[0][1]["password"] == "pw"
 
 
+def test_falha_ao_abrir_console_aparece_no_log(monkeypatch):
+    # antes: retry silencioso por até 600 s — o card ficava parado em
+    # "login no console" sem dizer por quê
+    from a10flash.a10_cli import A10Error
+
+    class FailCli:
+        def __init__(self, **kw):
+            self.baudrate = 9600
+
+        def open_and_login(self, **kw):
+            raise A10Error("login falhou (não veio 'Password:')")
+
+    monkeypatch.setattr(worker_mod.time, "sleep", lambda s: None)
+    w = _worker(cli_cls=FailCli)
+    msgs = []
+    w.notifier.warn = lambda dev, msg: msgs.append(msg)
+    try:
+        w._open_and_login()
+    except Exception:
+        pass
+    relevantes = [m for m in msgs if "Password:" in m]
+    # mostra o motivo, mas sem repetir a mesma mensagem a cada tentativa
+    assert len(relevantes) == 1
+
+
 def test_worker_usb_nao_recebe_fabrica_ssh():
     made = {}
 

@@ -88,6 +88,44 @@ def test_tcp_abre_com_connect_timeout(monkeypatch):
     assert seen == {"addr": ("10.10.1.155", 3001), "timeout": 3}
 
 
+def _run_bounded(fn, limit):
+    """Roda fn numa thread; devolve (terminou, resultado|exceção)."""
+    import threading
+
+    out = {}
+
+    def target():
+        try:
+            out["r"] = fn()
+        except Exception as exc:  # noqa: BLE001
+            out["r"] = exc
+
+    th = threading.Thread(target=target, daemon=True)
+    th.start()
+    th.join(limit)
+    return (not th.is_alive()), out.get("r")
+
+
+def test_digi_segurando_a_shell_nao_trava_a_abertura(digi):
+    # bancada 2026-10-09: cards parados em "login no console" — o paramiko
+    # espera a resposta do pedido de pty/shell SEM timeout
+    digi.stall_shell = True
+    done, res = _run_bounded(
+        lambda: _open(digi, connect_timeout=2), limit=8)
+    assert done, "abertura travou com o Digi segurando a shell"
+    assert isinstance(res, LinkDown)
+
+
+def test_probe_com_digi_segurando_a_shell_e_inalcancavel(digi):
+    # sonda travada congelaria o loop inteiro do monitor
+    digi.stall_shell = True
+    done, res = _run_bounded(
+        lambda: probe_port(digi.url, "admin", "pw", timeout=1,
+                           connect_timeout=2), limit=8)
+    assert done, "sonda travou com o Digi segurando a shell"
+    assert res == "unreachable"
+
+
 def test_canal_derrubado_levanta_sessionclosed(digi):
     con = _open(digi)
     try:

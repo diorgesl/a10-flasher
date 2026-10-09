@@ -17,6 +17,7 @@ Comportamento do Digi (medido no aparelho, 2026-10-05):
 
 import re
 import socket
+import threading
 import time
 
 import paramiko
@@ -64,6 +65,20 @@ class SshConsole(SerialConsole):
         self.transport = None
         self.chan = None
         host, tcp_port = parse_ssh_url(url)
+        # VIGIA da abertura: negociação SSH (connect), get_pty e
+        # invoke_shell do paramiko esperam o Digi SEM timeout — com o Digi
+        # segurando a porta a thread ficava parada para sempre (bancada
+        # 2026-10-09: cards presos em "login no console"). Fechar o
+        # transporte no prazo desbloqueia essas esperas com exceção.
+        expired = threading.Event()
+
+        def _expire():
+            expired.set()
+            if self.transport is not None:
+                self.transport.close()
+
+        watchdog = threading.Timer(connect_timeout, _expire)
+        watchdog.daemon = True
         try:
             # TCP com timeout próprio: Transport((host, porta)) conecta sem
             # timeout e cai no do SO (~75 s no macOS) com o Digi fora do ar
@@ -71,16 +86,27 @@ class SshConsole(SerialConsole):
                                             timeout=connect_timeout)
             t = paramiko.Transport(sock)
             self.transport = t
+            watchdog.start()
             t.banner_timeout = connect_timeout
             t.connect()  # sem verificação de host key (bancada, LAN)
             t.auth_password(username, password)  # fallback k-interactive
             chan = t.open_session(timeout=connect_timeout)
             chan.get_pty(term="vt100", width=200, height=50)
             chan.invoke_shell()
+            watchdog.cancel()
+            if expired.is_set():
+                raise paramiko.SSHException("prazo da abertura esgotado")
+            # envio limitado (Digi parou de ler = erro, não trava) e
+            # keepalive SSH para notar conexão morta
+            chan.settimeout(connect_timeout)
+            t.set_keepalive(15)
             self.chan = chan
         except (paramiko.SSHException, OSError, EOFError) as exc:
+            watchdog.cancel()
             self.close()
-            raise LinkDown(f"não consegui abrir {url}: {exc}") from exc
+            why = (f"o Digi não liberou a sessão em {connect_timeout:g}s"
+                   if expired.is_set() else str(exc))
+            raise LinkDown(f"não consegui abrir {url}: {why}") from exc
         try:
             self._skip_banner(banner_timeout)
             self._discard_history(history_quiet, history_max)
