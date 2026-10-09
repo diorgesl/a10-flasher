@@ -22,3 +22,7 @@ config.yaml
 deploy/docker/.env
 
 graphify-out
+
+# config local do Claude Code (tokens de API) e worktrees de sessão
+.claude/settings*.local.json
+.claude/worktrees/
